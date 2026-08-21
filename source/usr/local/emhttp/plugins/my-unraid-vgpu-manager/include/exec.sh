@@ -82,6 +82,7 @@ change_update_check() {
 
 install_nvidia() {
   echo "-----------------------Installing NVIDIA vGPU driver...------------------------"
+  "${EMHTTP}/include/download.sh" nvidia latest || true
   "${RC}" nvidia_install
   echo
   "${RC}" status
@@ -98,6 +99,7 @@ uninstall_nvidia() {
 
 install_intel() {
   echo "-----------------------Installing Intel i915 SR-IOV driver...------------------"
+  "${EMHTTP}/include/download.sh" i915 latest || true
   "${RC}" intel_install
   echo
   "${RC}" status
