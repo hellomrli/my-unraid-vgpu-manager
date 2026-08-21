@@ -116,9 +116,6 @@ nvidia_setup_config() {
   unlock="$(setting nvidia_unlock)"
   [ "${unlock}" = "true" ] || unlock="false"
   echo "unlock = ${unlock}" > "${UNLOCK_DIR}/config.toml"
-  if [ ! -f /boot/config/modprobe.d/nvidia.conf ]; then
-    echo "options nvidia cudahost=1" > /boot/config/modprobe.d/nvidia.conf
-  fi
   if [ -f "${XML_OVERRIDE}" ] && [ -d "$(dirname "${XML_TARGET}")" ]; then
     if ! cmp -s "${XML_OVERRIDE}" "${XML_TARGET}"; then
       log "Applying custom vgpuConfig.xml from ${XML_OVERRIDE}"
