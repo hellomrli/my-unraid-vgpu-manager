@@ -2,11 +2,11 @@
 <!DOCTYPE PLUGIN [
   <!ENTITY name      "my-unraid-vgpu-manager">
   <!ENTITY author    "hellomrli">
-  <!ENTITY version   "2026.08.21c">
+  <!ENTITY version   "2026.08.21d">
   <!ENTITY launch    "Settings/my-unraid-vgpu-manager">
   <!ENTITY gitURL    "https://github.com/&author;/&name;/raw/master">
   <!ENTITY pluginURL "&gitURL;/&name;.plg">
-  <!ENTITY md5       "2e99190bd7156c02b3dc9aac8bed5e9c">
+  <!ENTITY md5       "514dfe5c2f179816ac61ff6af9f19a8f">
   <!ENTITY plugin    "/boot/config/plugins/&name;">
   <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
   <!ENTITY packages  "/boot/config/plugins/&name;/packages">
@@ -15,6 +15,16 @@
 <PLUGIN  name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" min="6.11.5" support="https://github.com/&author;/&name;">
 
 <CHANGES>
+##2026.08.21d
+- ADD: FastAPI-DLS licensing support. nvidia_apply_license now fetches the
+  client token from https://<server>:<port>/-/client-token, writes it to
+  /etc/nvidia/ClientConfigToken/client_configuration_token.tok, points
+  ClientConfigTokenPath at that directory, creates /var/lib/nvidia/GridLicensing,
+  and keeps nvidia-gridd running so Q-series vGPU profiles license correctly.
+- ADD: Feature type is now a dropdown (0=vPC, 1=vWS, 2=RTX vWS/vDWS).
+- NOTE: mdevctl is now bundled in the NVIDIA driver package (see
+  my-nvidia-vgpu-driver) because Unraid ships no mdevctl.
+
 ##2026.08.21c
 - FIX: Intel i915 SR-IOV driver now loads correctly. The i915-sriov module
   depends on intel_sriov_compat (intel_drm_shim_* symbols), which must be loaded

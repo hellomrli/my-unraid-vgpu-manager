@@ -447,8 +447,12 @@ and click <b>Restart vGPU Services</b> below.
   : <input type="text" name="license_port" size="5" value="<?= htmlspecialchars($lport) ?>">
 </td></tr>
 <tr><td>Feature type:</td><td>
-  <input type="text" name="feature_type" size="5" value="<?= htmlspecialchars($lfeat) ?>">
-  <span style="opacity:.7">&nbsp;(0 = auto / GRID license)</span>
+  <select name="feature_type">
+    <option value="0" <?= $lfeat=="0" ? "selected" : "" ?>>0 - NVIDIA Virtual PC (vPC, B-series)</option>
+    <option value="1" <?= $lfeat=="1" ? "selected" : "" ?>>1 - NVIDIA Virtual Workstation (vWS)</option>
+    <option value="2" <?= $lfeat=="2" ? "selected" : "" ?>>2 - NVIDIA RTX Virtual Workstation (vDWS, Q-series)</option>
+  </select>
+  <span style="opacity:.7">&nbsp;(P4: Q-series = 2, B-series = 0)</span>
 </td></tr>
 <tr><td>vGPU unlock (spoof consumer GPU):</td><td>
   <select name="unlock">

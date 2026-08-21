@@ -128,6 +128,8 @@ nvidia_setup_config() {
 }
 
 # apply the gridd.conf license settings from the plugin page (no external script needed)
+# Supports FastAPI-DLS: fetch the client token from https://<addr>:<port>/-/client-token
+# and point ClientConfigTokenPath at the directory holding it.
 nvidia_apply_license() {
   local addr port feat ui conf changed=0
   addr="$(setting nvidia_license_server)"
@@ -135,6 +137,8 @@ nvidia_apply_license() {
   feat="$(setting nvidia_feature_type)"
   ui="$(setting nvidia_enable_ui)"
   conf="/etc/nvidia/gridd.conf"
+  local tok_dir="/etc/nvidia/ClientConfigToken"
+  local tok_file="${tok_dir}/client_configuration_token.tok"
   mkdir -p /etc/nvidia
   [ -n "${port}" ] || port="443"
   [ -n "${feat}" ] || feat="0"
@@ -153,13 +157,37 @@ FeatureType=${feat}
 EnableUI=${ui}
 EOF
   chmod 0644 "${conf}"
+
+  # FastAPI-DLS: fetch the client token so the Q-series (vDWS/vWS) profiles license.
+  if [ -n "${addr}" ]; then
+    mkdir -p "${tok_dir}" /var/lib/nvidia/GridLicensing
+    if [ ! -s "${tok_file}" ]; then
+      if curl -sk "https://${addr}:${port}/-/client-token" -o "${tok_file}" 2>/dev/null \
+         && [ -s "${tok_file}" ]; then
+        log "Fetched FastAPI-DLS client token (${tok_file}, $(wc -c < "${tok_file}") bytes)"
+      else
+        rm -f "${tok_file}"
+        log "WARNING: could not fetch client token from https://${addr}:${port}/-/client-token"
+      fi
+    fi
+    if [ -s "${tok_file}" ]; then
+      if ! grep -q "^ClientConfigTokenPath=" "${conf}" 2>/dev/null; then
+        echo "ClientConfigTokenPath=${tok_dir}" >> "${conf}"
+      fi
+    fi
+  fi
+
   if [ "${changed}" = "1" ] && [ -n "${addr}" ]; then
     log "Wrote /etc/nvidia/gridd.conf (ServerAddress=${addr}:${port}, FeatureType=${feat})"
-    # restart gridd if it is running so the new license applies immediately
+  fi
+  # gridd must be running for vGPU licensing (start/restart when config changed)
+  if [ -n "${addr}" ]; then
     if pgrep -x nvidia-gridd >/dev/null 2>&1; then
-      killall nvidia-gridd 2>/dev/null
-      sleep 1
+      [ "${changed}" = "1" ] && { killall nvidia-gridd 2>/dev/null; sleep 1; }
+    fi
+    if ! pgrep -x nvidia-gridd >/dev/null 2>&1; then
       nvidia-gridd >/dev/null 2>&1 &
+      log "Started nvidia-gridd (license: ${addr}:${port}, FeatureType=${feat})"
     fi
   fi
 }
