@@ -288,6 +288,100 @@ device_running() {
   [ -d "/sys/bus/mdev/devices/${1}" ]
 }
 
+# ============================================================================
+# vGPU <-> VM attach/detach (mediated device via virsh)
+# ============================================================================
+
+# List all libvirt VMs, one per line (handles names containing spaces).
+nvidia_list_vms() {
+  virsh list --all --name 2>/dev/null | sed '/^[[:space:]]*$/d'
+}
+
+# Print the VM that currently has <uuid> in its persistent config, or nothing.
+nvidia_vm_for_uuid() {
+  local uuid="$1" vm
+  while IFS= read -r vm; do
+    [ -z "$vm" ] && continue
+    if virsh dumpxml "$vm" 2>/dev/null | grep -q "uuid='${uuid}'"; then
+      echo "$vm"
+      return 0
+    fi
+  done < <(nvidia_list_vms)
+  return 1
+}
+
+# Attach a running vGPU mdev to a VM's persistent config. The change takes
+# effect on the VM's next cold start (mdev cannot be hot-plugged).
+nvidia_attach_vm() {
+  local uuid="$1" vm="$2" tmp state out existing
+  if [ -z "$uuid" ] || [ -z "$vm" ]; then
+    echo "ERROR: usage: nvidia_attach_vm <uuid> <vm-name>"
+    return 1
+  fi
+  if ! device_running "$uuid"; then
+    echo "ERROR: vGPU $uuid is not running - start it first."
+    return 1
+  fi
+  existing="$(nvidia_vm_for_uuid "$uuid")"
+  if [ -n "$existing" ] && [ "$existing" != "$vm" ]; then
+    echo "ERROR: vGPU $uuid is already attached to VM \"$existing\" - detach it first."
+    return 1
+  fi
+  tmp="$(mktemp)"
+  cat > "$tmp" <<EOF
+<hostdev mode='subsystem' type='mdev' managed='no' model='vfio-pci'>
+  <source>
+    <address uuid='$uuid'/>
+  </source>
+</hostdev>
+EOF
+  out="$(virsh attach-device "$vm" "$tmp" --config 2>&1)" || {
+    echo "ERROR: failed to attach vGPU $uuid to VM \"$vm\": $out"
+    rm -f "$tmp"
+    return 1
+  }
+  rm -f "$tmp"
+  state="$(virsh domstate "$vm" 2>/dev/null)"
+  log "Attached vGPU $uuid to VM $vm (persistent config)"
+  echo "Attached vGPU $uuid to VM \"$vm\"."
+  if [ "$state" = "running" ]; then
+    echo "NOTE: VM \"$vm\" is running. Shut it down and start it again for the vGPU to appear."
+  else
+    echo "Start VM \"$vm\" to use the vGPU."
+  fi
+  return 0
+}
+
+# Detach a vGPU mdev from a VM's persistent config.
+nvidia_detach_vm() {
+  local uuid="$1" vm="$2" tmp state out
+  if [ -z "$uuid" ] || [ -z "$vm" ]; then
+    echo "ERROR: usage: nvidia_detach_vm <uuid> <vm-name>"
+    return 1
+  fi
+  tmp="$(mktemp)"
+  cat > "$tmp" <<EOF
+<hostdev mode='subsystem' type='mdev' managed='no' model='vfio-pci'>
+  <source>
+    <address uuid='$uuid'/>
+  </source>
+</hostdev>
+EOF
+  out="$(virsh detach-device "$vm" "$tmp" --config 2>&1)" || {
+    echo "ERROR: failed to detach vGPU $uuid from VM \"$vm\": $out"
+    rm -f "$tmp"
+    return 1
+  }
+  rm -f "$tmp"
+  state="$(virsh domstate "$vm" 2>/dev/null)"
+  log "Detached vGPU $uuid from VM $vm (persistent config)"
+  echo "Detached vGPU $uuid from VM \"$vm\"."
+  if [ "$state" = "running" ]; then
+    echo "NOTE: VM \"$vm\" is running. Shut it down and start it again to fully release the vGPU."
+  fi
+  return 0
+}
+
 nvidia_apply_devices() {
   [ -s "${DEVCFG}" ] || return 0
   local uuid pci mtype rc=0
@@ -827,6 +921,8 @@ case "$1" in
   nvidia_start)      nvidia_do_start ;;
   nvidia_update)     nvidia_do_update ;;
   nvidia_license)    nvidia_apply_license ;;
+  nvidia_attach_vm)  nvidia_attach_vm "$2" "$3" ;;
+  nvidia_detach_vm)  nvidia_detach_vm "$2" "$3" ;;
   intel_install)     intel_do_install ;;
   intel_uninstall)   intel_do_uninstall ;;
   intel_ensure)      intel_do_ensure ;;

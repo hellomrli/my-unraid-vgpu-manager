@@ -2,11 +2,11 @@
 <!DOCTYPE PLUGIN [
   <!ENTITY name      "my-unraid-vgpu-manager">
   <!ENTITY author    "hellomrli">
-  <!ENTITY version   "2026.08.21g">
+  <!ENTITY version   "2026.08.21h">
   <!ENTITY launch    "Settings/my-unraid-vgpu-manager">
   <!ENTITY gitURL    "https://github.com/&author;/&name;/raw/master">
   <!ENTITY pluginURL "&gitURL;/&name;.plg">
-  <!ENTITY md5       "3c73823cf906c676ffe3a6c3dadaf703">
+  <!ENTITY md5       "62440d0b47198f2b13447c91559c0e49">
   <!ENTITY plugin    "/boot/config/plugins/&name;">
   <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
   <!ENTITY packages  "/boot/config/plugins/&name;/packages">
@@ -15,6 +15,14 @@
 <PLUGIN  name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" min="6.11.5" support="https://github.com/&author;/&name;">
 
 <CHANGES>
+##2026.08.21h
+- ADD: "Attach vGPU to VM" section. Bind a vGPU mdev to a libvirt VM's
+  persistent config via virsh (attach/detach), so the vGPU appears as a
+  graphics card inside the VM - the Unraid VM editor cannot list mdev devices
+  (they are not PCI devices), which this fills in.
+- ADD: operation notes - attach/detach takes effect on the VM's next cold
+  start; mdev cannot be hot-plugged.
+
 ##2026.08.21g
 - CHG: Settings page tabs restyled as plain pagination buttons (no icons,
   no bold highlight) for a cleaner look.

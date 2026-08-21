@@ -162,6 +162,26 @@ if (!empty($_POST['vgpu_action'])) {
       shell_exec(escapeshellarg($vgpu_rc)." apply 2>/dev/null");
       $vgpu_msg = "profile_override.toml saved. Restart the vGPU services (and your VM) for changes to take effect.";
       break;
+    case 'attach_vm':
+      $vm = trim($_POST['vm'] ?? '');
+      if (!preg_match($valid_uuid, $uuid)) $vgpu_err = "Invalid vGPU UUID.";
+      elseif ($vm === '') $vgpu_err = "Choose a VM to attach to.";
+      else {
+        $out = shell_exec(escapeshellarg($vgpu_rc)." nvidia_attach_vm ".escapeshellarg($uuid)." ".escapeshellarg($vm)." 2>&1");
+        $vgpu_msg = trim($out);
+        if (strpos($out, 'ERROR') !== false) { $vgpu_err = trim($out); $vgpu_msg = ""; }
+      }
+      break;
+    case 'detach_vm':
+      $vm = trim($_POST['vm'] ?? '');
+      if (!preg_match($valid_uuid, $uuid)) $vgpu_err = "Invalid vGPU UUID.";
+      elseif ($vm === '') $vgpu_err = "Choose a VM to detach from.";
+      else {
+        $out = shell_exec(escapeshellarg($vgpu_rc)." nvidia_detach_vm ".escapeshellarg($uuid)." ".escapeshellarg($vm)." 2>&1");
+        $vgpu_msg = trim($out);
+        if (strpos($out, 'ERROR') !== false) { $vgpu_err = trim($out); $vgpu_msg = ""; }
+      }
+      break;
   }
 }
 
@@ -217,6 +237,19 @@ foreach (glob("/sys/bus/pci/devices/*") as $dev) {
 $devices = vgpu_devices();
 foreach ($devices as &$d) $d['running'] = is_dir("/sys/bus/mdev/devices/{$d['uuid']}");
 unset($d);
+
+/* libvirt VMs + which vGPU mdev each VM currently has attached (persistent config) */
+$vm_list = array_values(array_filter(array_map('trim',
+  explode("\n", (string)shell_exec("virsh list --all --name 2>/dev/null")))));
+$mdev_to_vm = [];
+foreach ($vm_list as $vm) {
+  // --inactive reads the persistent config; for a running VM the default
+  // (active) dumpxml would hide a --config attach that only applies on next boot.
+  $vmxml = (string)shell_exec("virsh dumpxml --inactive ".escapeshellarg($vm)." 2>/dev/null");
+  if (preg_match_all("/<hostdev\b[^>]*type='mdev'[^>]*>.*?<address\s+uuid='([^']+)'/s", $vmxml, $m)) {
+    foreach ($m[1] as $u) $mdev_to_vm[$u] = $vm;
+  }
+}
 
 $unlock_on    = vgpu_setting('nvidia_unlock', vgpu_setting('unlock', 'false')) === 'true';
 $upd_check_on = vgpu_setting('update_check', 'true') === 'true';
@@ -603,6 +636,55 @@ adding the hostdev XML (click <i class="fa fa-code"></i>) to the VM's XML templa
 </table>
 </form>
 <script>fillTypes();</script>
+</div>
+
+<div class="vgpu-panel">
+<h3><i class="fa fa-tv"></i> Attach vGPU to VM</h3>
+<p>Bind a vGPU to a virtual machine so it appears as a graphics card inside the VM (same effect as
+PVE's <code>hostpci,mdev=</code>). The change is written to the VM's <b>persistent config</b> and takes
+effect on its <b>next cold start</b> - mdev cannot be hot-plugged.</p>
+<p style="opacity:.8"><i class="fa fa-info-circle"></i> <b>Operation notes:</b> you do <b>not</b> need to
+shut the VM down to attach/detach, but if the VM is <b>running</b> you must <b>shut it down and start it
+again</b> for the change to appear (or for the vGPU to be fully released). A vGPU can only be attached to
+one VM at a time.</p>
+
+<?php if (!$devices): ?>
+<p><i>No vGPU devices configured yet - add one in the "vGPU Devices" section above first.</i></p>
+<?php elseif (!$vm_list): ?>
+<p><i>No VMs found. Create a VM first (Settings -&gt; VM Manager).</i></p>
+<?php else: ?>
+<table class="vgpu-table">
+<tr><th>vGPU</th><th>Profile</th><th>Attached VM</th><th style="width:320px">Attach / Detach</th></tr>
+<?php foreach ($devices as $d): $attached = $mdev_to_vm[$d['uuid']] ?? ''; ?>
+<tr>
+  <td class="vgpu-mono" style="font-size:.85em"><?= htmlspecialchars($d['uuid']) ?></td>
+  <td><?= htmlspecialchars($d['type']) ?></td>
+  <td><?= $attached !== '' ? "<span class='vgpu-ok'>".htmlspecialchars($attached)."</span>" : "<span class='vgpu-warn'>not attached</span>" ?></td>
+  <td>
+    <?php if ($attached !== ''): ?>
+      <form method="POST" style="margin:0;display:inline">
+        <input type="hidden" name="vgpu_action" value="detach_vm">
+        <input type="hidden" name="uuid" value="<?= htmlspecialchars($d['uuid']) ?>">
+        <input type="hidden" name="vm" value="<?= htmlspecialchars($attached) ?>">
+        <input type="submit" value="Detach from <?= htmlspecialchars($attached) ?>" onclick="return confirm('Detach this vGPU from <?= htmlspecialchars($attached) ?>?');">
+      </form>
+    <?php else: ?>
+      <form method="POST" style="margin:0;display:inline">
+        <input type="hidden" name="vgpu_action" value="attach_vm">
+        <input type="hidden" name="uuid" value="<?= htmlspecialchars($d['uuid']) ?>">
+        <select name="vm">
+          <?php foreach ($vm_list as $vm): ?>
+            <option value="<?= htmlspecialchars($vm) ?>"><?= htmlspecialchars($vm) ?></option>
+          <?php endforeach; ?>
+        </select>
+        <input type="submit" value="Attach">
+      </form>
+    <?php endif; ?>
+  </td>
+</tr>
+<?php endforeach; ?>
+</table>
+<?php endif; ?>
 </div>
 
 <div class="vgpu-panel">
