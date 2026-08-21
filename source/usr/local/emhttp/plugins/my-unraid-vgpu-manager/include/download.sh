@@ -17,7 +17,7 @@ PLGCFG="/boot/config/plugins/${PLUGIN}"
 SETTINGS="${PLGCFG}/settings.cfg"
 KERNEL_V="$(uname -r)"
 PKGDIR="${PLGCFG}/packages/${KERNEL_V%%-*}"
-NVIDIA_REPO="hellomrli/my-vgpu-driver"
+NVIDIA_REPO="hellomrli/my-nvidia-vgpu-driver"
 I915_REPO="hellomrli/my-i915-sriov-driver"
 
 # pick source: first arg is nvidia (default) or i915
