@@ -25,13 +25,13 @@
 
 ##2026.08.21e
 - ADD: Settings page split into three tabs:
-  1. Drivers - driver status + install/uninstall NVIDIA & Intel
+  1. Drivers - driver status + install/uninstall NVIDIA &amp; Intel
   2. NVIDIA GPU - status, license/modules, vGPU devices, profile_override
   3. Intel i915 SR-IOV - status, VF count, passthrough, boot parameters
 
 ##2026.08.21d
 - ADD: FastAPI-DLS licensing support. nvidia_apply_license now fetches the
-  client token from https://<server>:<port>/-/client-token, writes it to
+  client token from https://&lt;server&gt;:&lt;port&gt;/-/client-token, writes it to
   /etc/nvidia/ClientConfigToken/client_configuration_token.tok, points
   ClientConfigTokenPath at that directory, creates /var/lib/nvidia/GridLicensing,
   and keeps nvidia-gridd running so Q-series vGPU profiles license correctly.
