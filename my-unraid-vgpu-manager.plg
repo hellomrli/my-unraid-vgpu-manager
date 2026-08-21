@@ -2,11 +2,11 @@
 <!DOCTYPE PLUGIN [
   <!ENTITY name      "my-unraid-vgpu-manager">
   <!ENTITY author    "hellomrli">
-  <!ENTITY version   "2026.08.21d">
+  <!ENTITY version   "2026.08.21e">
   <!ENTITY launch    "Settings/my-unraid-vgpu-manager">
   <!ENTITY gitURL    "https://github.com/&author;/&name;/raw/master">
   <!ENTITY pluginURL "&gitURL;/&name;.plg">
-  <!ENTITY md5       "514dfe5c2f179816ac61ff6af9f19a8f">
+  <!ENTITY md5       "77a0a8372df54a69494f76d2ba830183">
   <!ENTITY plugin    "/boot/config/plugins/&name;">
   <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
   <!ENTITY packages  "/boot/config/plugins/&name;/packages">
@@ -15,6 +15,12 @@
 <PLUGIN  name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" min="6.11.5" support="https://github.com/&author;/&name;">
 
 <CHANGES>
+##2026.08.21e
+- ADD: Settings page split into three tabs:
+  1. Drivers - driver status + install/uninstall NVIDIA & Intel
+  2. NVIDIA GPU - status, license/modules, vGPU devices, profile_override
+  3. Intel i915 SR-IOV - status, VF count, passthrough, boot parameters
+
 ##2026.08.21d
 - ADD: FastAPI-DLS licensing support. nvidia_apply_license now fetches the
   client token from https://<server>:<port>/-/client-token, writes it to

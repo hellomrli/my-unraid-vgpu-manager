@@ -331,6 +331,16 @@ function uninstallIntel() {
   if (!confirm('Uninstall the Intel i915 SR-IOV driver? This drops all VFs.')) return;
   openBox('/plugins/my-unraid-vgpu-manager/include/exec.sh&arg1=uninstall_intel', 'Uninstalling Intel i915 SR-IOV Driver', 600, 900, true);
 }
+
+function switchTab(id, btn) {
+  document.querySelectorAll('.vgpu-tab').forEach(function(t){ t.classList.remove('active'); });
+  document.querySelectorAll('.vgpu-tab-content').forEach(function(c){ c.classList.remove('active'); });
+  if (btn) btn.classList.add('active');
+  var el = document.getElementById(id);
+  if (el) el.classList.add('active');
+  // re-render the profile table when its tab becomes visible (element was hidden)
+  if (id === 'tab-nvidia') { try { fillTypes(); } catch(e){} }
+}
 </script>
 
 <style>
@@ -357,6 +367,12 @@ tr.vgpu-selected {background: rgba(76,175,80,.18) !important;}
 tr.vgpu-soldout {opacity: .45; cursor: not-allowed;}
 .vgpu-mono {font-family: bitstream, monospace;}
 #override_area {width: 100%; max-width: 900px; height: 220px; font-family: bitstream, monospace;}
+.vgpu-tabs {display: flex; gap: 4px; margin: 0 0 16px 0; border-bottom: 1px solid rgba(125,125,125,.3); flex-wrap: wrap;}
+.vgpu-tab {background: none; border: 1px solid transparent; border-bottom: none; border-radius: 6px 6px 0 0; padding: 8px 16px; cursor: pointer; font-size: 1.05rem; color: inherit;}
+.vgpu-tab:hover {background: rgba(125,125,125,.12);}
+.vgpu-tab.active {border-color: rgba(125,125,125,.3); background: var(--background-alt, rgba(125,125,125,.08)); font-weight: bold;}
+.vgpu-tab-content {display: none;}
+.vgpu-tab-content.active {display: block;}
 </style>
 
 <form id="vgpu_action_form" method="POST" style="display:none">
@@ -366,6 +382,15 @@ tr.vgpu-soldout {opacity: .45; cursor: not-allowed;}
 
 <?php if ($vgpu_err): ?><div class="vgpu-banner err"><i class="fa fa-exclamation-triangle"></i> <?= htmlspecialchars($vgpu_err) ?></div><?php endif; ?>
 <?php if ($vgpu_msg): ?><div class="vgpu-banner msg"><i class="fa fa-check"></i> <?= htmlspecialchars($vgpu_msg) ?></div><?php endif; ?>
+
+<div class="vgpu-tabs">
+  <button type="button" class="vgpu-tab active" onclick="switchTab('tab-drivers', this)"><i class="fa fa-download"></i>&nbsp; Drivers</button>
+  <button type="button" class="vgpu-tab" onclick="switchTab('tab-nvidia', this)"><i class="fa fa-cube"></i>&nbsp; NVIDIA GPU</button>
+  <button type="button" class="vgpu-tab" onclick="switchTab('tab-i915', this)"><i class="fa fa-microchip"></i>&nbsp; Intel i915 SR-IOV</button>
+</div>
+
+<!-- ==================== Tab 1: Drivers ==================== -->
+<div id="tab-drivers" class="vgpu-tab-content active">
 
 <div class="vgpu-panel">
 <h3><i class="fa fa-server"></i> Driver Status</h3>
@@ -380,14 +405,13 @@ tr.vgpu-soldout {opacity: .45; cursor: not-allowed;}
     <td>VFs:</td><td><?= ($intel_total !== '' && $intel_total !== '') ? "<span class='vgpu-mono'>".htmlspecialchars($intel_vfs)." / ".htmlspecialchars($intel_total)."</span>" : "n/a" ?></td></tr>
 </table>
 <p style="opacity:.8; margin-top:8px"><i class="fa fa-info-circle"></i>
-Drivers are installed <b>on demand</b> from the panels below - installing this plugin does not change
+Drivers are installed <b>on demand</b> from this page - installing this plugin does not change
 your GPU setup until you click Install.</p>
 </div>
 
-<!-- ==================== NVIDIA vGPU ==================== -->
+<!-- NVIDIA driver install/uninstall -->
 <div class="vgpu-panel">
-<h3><i class="fa fa-cube"></i> NVIDIA vGPU</h3>
-
+<h3><i class="fa fa-cube"></i> NVIDIA vGPU Driver</h3>
 <?php if (!$nvidia_inst): ?>
 <div class="vgpu-banner warn"><i class="fa fa-download"></i>
 The NVIDIA vGPU driver is not installed yet.
@@ -397,10 +421,57 @@ The NVIDIA vGPU driver is not installed yet.
 <div class="vgpu-banner msg"><i class="fa fa-check"></i>
 NVIDIA vGPU driver installed (<?= $installed_v ? "v".htmlspecialchars($installed_v) : "" ?>).
 <input type="button" value="Uninstall" onclick="uninstallNvidia()" style="margin-left:12px">
+<input type="button" value="Update Driver" onclick="updateDriver()" style="margin-left:8px">
 </div>
 <?php endif; ?>
+</div>
 
-<?php if ($nvidia_inst): ?>
+<!-- Intel driver install/uninstall -->
+<div class="vgpu-panel">
+<h3><i class="fa fa-microchip"></i> Intel i915 SR-IOV Driver</h3>
+<?php if (!$intel_inst): ?>
+<div class="vgpu-banner warn"><i class="fa fa-download"></i>
+The Intel i915 SR-IOV driver is not installed yet.
+<?php if (!$intel_pf): ?><br><span style="opacity:.7">No Intel GPU detected on this system - you can still install the
+package and it will activate at the next boot with an Intel iGPU present.</span><?php endif; ?>
+<input type="button" value="Install Intel i915 SR-IOV Driver" onclick="installIntel()" style="margin-left:12px">
+</div>
+<?php else: ?>
+<div class="vgpu-banner msg"><i class="fa fa-check"></i>
+Intel i915 SR-IOV driver installed (<?= htmlspecialchars($i915_inst ?: 'loaded') ?>).
+<input type="button" value="Uninstall" onclick="uninstallIntel()" style="margin-left:12px">
+</div>
+<?php endif; ?>
+</div>
+
+<!-- General -->
+<div class="vgpu-panel">
+<h3><i class="fa fa-cog"></i> General</h3>
+<form method="POST">
+<input type="hidden" name="vgpu_action" value="save_settings">
+<table class="vgpu-status">
+<tr><td>Check daily for driver updates:</td><td>
+  <select name="update_check">
+    <option value="true" <?= $upd_check_on ? "selected" : "" ?>>Yes</option>
+    <option value="false" <?= $upd_check_on ? "" : "selected" ?>>No</option>
+  </select>
+</td></tr>
+<tr><td></td><td><input type="submit" value="Apply"></td></tr>
+</table>
+</form>
+</div>
+
+</div><!-- /tab-drivers -->
+
+<!-- ==================== Tab 2: NVIDIA GPU ==================== -->
+<div id="tab-nvidia" class="vgpu-tab-content">
+
+<?php if (!$nvidia_inst): ?>
+<div class="vgpu-panel">
+<div class="vgpu-banner warn"><i class="fa fa-info-circle"></i>
+The NVIDIA vGPU driver is not installed yet. Install it from the <b>Drivers</b> tab first.</div>
+</div>
+<?php else: ?>
 
 <?php if (!$types_present): ?>
 <div class="vgpu-banner warn"><i class="fa fa-exclamation-triangle"></i>
@@ -413,7 +484,8 @@ and click <b>Restart vGPU Services</b> below.
 </div>
 <?php endif; ?>
 
-<h4><i class="fa fa-info-circle"></i> Status</h4>
+<div class="vgpu-panel">
+<h3><i class="fa fa-info-circle"></i> Status</h3>
 <table class="vgpu-status">
 <tr><td>Driver installed:</td><td><?= $installed_v ? "<span class='vgpu-ok'>v".htmlspecialchars($installed_v)."</span>" : "<span class='vgpu-bad'>none</span>" ?></td>
     <td>Driver loaded:</td><td><?= $loaded_v ? "<span class='vgpu-ok'>v".htmlspecialchars($loaded_v)."</span>" : "<span class='vgpu-bad'>not loaded</span>" ?></td></tr>
@@ -437,8 +509,10 @@ and click <b>Restart vGPU Services</b> below.
   <input type="button" value="Update Driver" onclick="updateDriver()">
   <span style="opacity:.7">&nbsp;Restart reloads the nvidia driver to rebuild the profile list. Stop any VM using a vGPU first.</span>
 </div>
+</div>
 
-<h4><i class="fa fa-key"></i> License & Modules</h4>
+<div class="vgpu-panel">
+<h3><i class="fa fa-key"></i> License & Modules</h3>
 <form method="POST">
 <input type="hidden" name="vgpu_action" value="save_nvidia">
 <table class="vgpu-status">
@@ -468,8 +542,10 @@ and click <b>Restart vGPU Services</b> below.
 <tr><td></td><td><input type="submit" value="Save NVIDIA Settings"></td></tr>
 </table>
 </form>
+</div>
 
-<h4><i class="fa fa-clone"></i> vGPU Devices</h4>
+<div class="vgpu-panel">
+<h3><i class="fa fa-clone"></i> vGPU Devices</h3>
 <p>These devices are created automatically at every boot - no user script needed. Assign one to a VM by
 adding the hostdev XML (click <i class="fa fa-code"></i>) to the VM's XML template.</p>
 
@@ -527,8 +603,10 @@ adding the hostdev XML (click <i class="fa fa-code"></i>) to the VM's XML templa
 </table>
 </form>
 <script>fillTypes();</script>
+</div>
 
-<h4>profile_override.toml</h4>
+<div class="vgpu-panel">
+<h3><i class="fa fa-sliders-h"></i> profile_override.toml</h3>
 <p>Optional <a href="https://github.com/mbilker/vgpu_unlock-rs#readme" target="_blank">vgpu_unlock-rs profile overrides</a>
 (framebuffer size, display heads, cuda, etc.). Stored on the flash drive and applied at every boot.</p>
 <form method="POST">
@@ -536,39 +614,33 @@ adding the hostdev XML (click <i class="fa fa-code"></i>) to the VM's XML templa
 <textarea id="override_area" name="override_content" spellcheck="false"><?= htmlspecialchars($override_content) ?></textarea><br>
 <input type="submit" value="Save Overrides">
 </form>
+</div>
 
 <?php endif; /* nvidia installed */ ?>
-</div>
+</div><!-- /tab-nvidia -->
 
-<!-- ==================== Intel i915 SR-IOV ==================== -->
-<div class="vgpu-panel">
-<h3><i class="fa fa-microchip"></i> Intel i915 SR-IOV</h3>
+<!-- ==================== Tab 3: Intel i915 SR-IOV ==================== -->
+<div id="tab-i915" class="vgpu-tab-content">
 
 <?php if (!$intel_inst): ?>
-<div class="vgpu-banner warn"><i class="fa fa-download"></i>
-The Intel i915 SR-IOV driver is not installed yet.
-<?php if (!$intel_pf): ?><br><span style="opacity:.7">No Intel GPU detected on this system - you can still install the
-package and it will activate at the next boot with an Intel iGPU present.</span><?php endif; ?>
-<input type="button" value="Install Intel i915 SR-IOV Driver" onclick="installIntel()" style="margin-left:12px">
+<div class="vgpu-panel">
+<div class="vgpu-banner warn"><i class="fa fa-info-circle"></i>
+The Intel i915 SR-IOV driver is not installed yet. Install it from the <b>Drivers</b> tab first.</div>
 </div>
 <?php else: ?>
-<div class="vgpu-banner msg"><i class="fa fa-check"></i>
-Intel i915 SR-IOV driver installed (<?= htmlspecialchars($i915_inst ?: 'loaded') ?>).
-<input type="button" value="Uninstall" onclick="uninstallIntel()" style="margin-left:12px">
-</div>
-<?php endif; ?>
 
-<?php if ($intel_inst): ?>
-
-<h4><i class="fa fa-info-circle"></i> Status</h4>
+<div class="vgpu-panel">
+<h3><i class="fa fa-info-circle"></i> Status</h3>
 <table class="vgpu-status">
 <tr><td>Intel GPU (PF):</td><td><?= $intel_pf ? "<span class='vgpu-mono'>".htmlspecialchars($intel_pf)."</span>" : "<span class='vgpu-bad'>none detected</span>" ?></td>
     <td>i915 driver:</td><td><?= $i915_inst ? "<span class='vgpu-ok'>".htmlspecialchars($i915_inst)."</span>" : "<span class='vgpu-bad'>not loaded</span>" ?></td></tr>
 <tr><td>VFs active:</td><td><?= ($intel_vfs !== '') ? "<span class='vgpu-mono'>".htmlspecialchars($intel_vfs)."</span>" : "0" ?></td>
     <td>VFs supported:</td><td><?= ($intel_total !== '') ? "<span class='vgpu-mono'>".htmlspecialchars($intel_total)."</span>" : "n/a" ?></td></tr>
 </table>
+</div>
 
-<h4><i class="fa fa-sliders-h"></i> Virtual Functions</h4>
+<div class="vgpu-panel">
+<h3><i class="fa fa-sliders-h"></i> Virtual Functions</h3>
 <form method="POST">
 <input type="hidden" name="vgpu_action" value="save_intel">
 <table class="vgpu-status">
@@ -579,8 +651,10 @@ Intel i915 SR-IOV driver installed (<?= htmlspecialchars($i915_inst ?: 'loaded')
 <tr><td></td><td><input type="submit" value="Apply VF Count"></td></tr>
 </table>
 </form>
+</div>
 
-<h4><i class="fa fa-plug"></i> VF Passthrough</h4>
+<div class="vgpu-panel">
+<h3><i class="fa fa-plug"></i> VF Passthrough</h3>
 <p>VFs are automatically bound to <code class="vgpu-mono">vfio-pci</code> so you can add them to VMs.
 <b>Never passthrough the PF (<?= htmlspecialchars($intel_pf ?: '00:02.0') ?>)</b> - it would crash all other VFs.</p>
 <table class="vgpu-table">
@@ -604,29 +678,16 @@ if ($intel_pf) {
     <td><?= $v[1] === 'vfio-pci' ? "<span class='vgpu-ok'>vfio-pci</span>" : htmlspecialchars($v[1]) ?></td></tr>
 <?php endforeach; endif; ?>
 </table>
+</div>
 
-<h4><i class="fa fa-terminal"></i> Boot Parameters</h4>
+<div class="vgpu-panel">
+<h3><i class="fa fa-terminal"></i> Boot Parameters</h3>
 <p>The following parameters must be on the syslinux append line (Settings -&gt; Boot) for SR-IOV to
 survive a reboot. The plugin does not modify syslinux automatically; add them manually:</p>
 <pre class="vgpu-mono" style="background:rgba(0,0,0,.25);padding:10px;border-radius:4px">intel_iommu=on i915.enable_guc=3 i915.max_vfs=<?= htmlspecialchars($vfnum) ?> module_blacklist=xe</pre>
 <p style="opacity:.7">Also make sure <code class="vgpu-mono">/boot/config/modprobe.d/i915.conf</code> blacklists the
 <code class="vgpu-mono">xe</code> driver so i915 owns the GPU.</p>
+</div>
 
 <?php endif; /* intel installed */ ?>
-</div>
-
-<div class="vgpu-panel">
-<h3><i class="fa fa-cog"></i> General</h3>
-<form method="POST">
-<input type="hidden" name="vgpu_action" value="save_settings">
-<table class="vgpu-status">
-<tr><td>Check daily for driver updates:</td><td>
-  <select name="update_check">
-    <option value="true" <?= $upd_check_on ? "selected" : "" ?>>Yes</option>
-    <option value="false" <?= $upd_check_on ? "" : "selected" ?>>No</option>
-  </select>
-</td></tr>
-<tr><td></td><td><input type="submit" value="Apply"></td></tr>
-</table>
-</form>
-</div>
+</div><!-- /tab-i915 -->
