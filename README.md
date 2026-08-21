@@ -20,7 +20,7 @@ completely untouched.
 The plugin downloads driver packages built by two dedicated projects
 (GitHub Actions cloud builds), keyed by the running kernel:
 
-- NVIDIA: [hellomrli/my-vgpu-driver](https://github.com/hellomrli/my-vgpu-driver)
+- NVIDIA: [hellomrli/my-nvidia-vgpu-driver](https://github.com/hellomrli/my-nvidia-vgpu-driver)
   - `nvidia-<ver>-<kernel>-Unraid-<b>.txz` from Release tag `<kernel>`
 - Intel: [hellomrli/my-i915-sriov-driver](https://github.com/hellomrli/my-i915-sriov-driver)
   - `i915-sriov-<ver>-<kernel>-Unraid-<b>.txz` from Release tag `<kernel>`

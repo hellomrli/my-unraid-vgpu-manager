@@ -6,7 +6,7 @@
   <!ENTITY launch    "Settings/my-unraid-vgpu-manager">
   <!ENTITY gitURL    "https://github.com/&author;/&name;/raw/master">
   <!ENTITY pluginURL "&gitURL;/&name;.plg">
-  <!ENTITY md5       "471e0b6705613da7e686f589b052386b">
+  <!ENTITY md5       "e0b451566101da442fa0a3825045a032">
   <!ENTITY plugin    "/boot/config/plugins/&name;">
   <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
   <!ENTITY packages  "/boot/config/plugins/&name;/packages">
@@ -24,7 +24,7 @@
 - Intel: i915 SR-IOV driver, VF count management, vfio-pci binding, syslinux
   boot parameters
 - Driver packages come from the dedicated driver repos:
-  hellomrli/my-vgpu-driver (NVIDIA) and hellomrli/my-i915-sriov-driver (Intel)
+  hellomrli/my-nvidia-vgpu-driver (NVIDIA) and hellomrli/my-i915-sriov-driver (Intel)
 
 ##2026.08.20
 - Initial release for the merged vGPU driver plugin

@@ -4,7 +4,7 @@
 # Called from the .plg on boot/install and from the plugin page before an update.
 #
 # Two independent sources:
-#   nvidia - NVIDIA vGPU merged driver from hellomrli/my-vgpu-driver (tag = kernel)
+#   nvidia - NVIDIA vGPU merged driver from hellomrli/my-nvidia-vgpu-driver (tag = kernel)
 #   i915   - Intel i915 SR-IOV driver from hellomrli/my-i915-sriov-driver (tag = kernel)
 #
 # LOCAL-FIRST behaviour: a package placed manually in

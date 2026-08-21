@@ -17,7 +17,7 @@ update() {
     [ ${age} -lt 300 ] && return 0
   fi
   # asset names: nvidia-<driver version>-<kernel>-Unraid-1.txz -> field 2 is the version
-  wget -T 15 -qO- "https://api.github.com/repos/hellomrli/my-vgpu-driver/releases/tags/${KERNEL_V}" 2>/dev/null \
+  wget -T 15 -qO- "https://api.github.com/repos/hellomrli/my-nvidia-vgpu-driver/releases/tags/${KERNEL_V}" 2>/dev/null \
     | jq -r '.assets[].name' 2>/dev/null \
     | grep '^nvidia-' | grep -E -v '\.md5$' \
     | cut -d '-' -f2 | sort -V | uniq | tail -10 > "${VERSIONS_CACHE}"

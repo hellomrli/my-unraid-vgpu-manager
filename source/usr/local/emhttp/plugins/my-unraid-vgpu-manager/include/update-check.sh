@@ -17,7 +17,7 @@ SET_DRV_V="$(grep -m1 '^driver_version=' "${SETTINGS}" 2>/dev/null | cut -d '=' 
 [ "${SET_DRV_V}" = "latest" ] || exit 0
 
 INSTALLED_V="$(modinfo -F version nvidia 2>/dev/null | head -1)"
-LATEST_V="$(wget -T 15 -qO- "https://api.github.com/repos/hellomrli/my-vgpu-driver/releases/tags/${KERNEL_V}" 2>/dev/null \
+LATEST_V="$(wget -T 15 -qO- "https://api.github.com/repos/hellomrli/my-nvidia-vgpu-driver/releases/tags/${KERNEL_V}" 2>/dev/null \
   | jq -r '.assets[].name' 2>/dev/null \
   | grep '^nvidia-' | grep -E -v '\.md5$' \
   | cut -d '-' -f2 | sort -V | uniq | tail -1)"
