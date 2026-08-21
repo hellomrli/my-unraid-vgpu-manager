@@ -477,22 +477,63 @@ intel_bind_all_vfio() {
 }
 
 # load the i915 module with SR-IOV params
+# neutralize a manually-added "modprobe i915" in /boot/config/go (common from
+# tutorials) so it stops loading the stock i915 before emhttp starts. The plugin
+# now owns i915 loading via the emhttp "started" event. The modprobe target is
+# rewritten (not removed) so the go file's shell syntax stays intact.
+intel_cleanup_go() {
+  local go="/boot/config/go"
+  [ -f "${go}" ] || return 0
+  if grep -qE 'modprobe i915([[:space:]]|$)' "${go}"; then
+    [ -f "${go}.vgpu.bak" ] || cp -a "${go}" "${go}.vgpu.bak"
+    sed -i 's|/sbin/modprobe i915\b|/sbin/modprobe i915_disabled_by_vgpu_plugin|g' "${go}"
+    sed -i 's|modprobe i915\b|modprobe i915_disabled_by_vgpu_plugin|g' "${go}"
+    log "Neutralized manual modprobe i915 in /boot/config/go (backup: ${go}.vgpu.bak)"
+    notify "Detected manual i915 loading in /boot/config/go - disabled it so the plugin manages i915 SR-IOV"
+  fi
+}
+
 intel_load_module() {
   local max_vfs
   max_vfs="$(setting intel_vf_number)"
   [ -n "${max_vfs}" ] || max_vfs="7"
-  if lsmod | grep -q '^i915 '; then
-    log "i915 already loaded"
-    return 0
-  fi
-  # blacklist xe so the i915-sriov driver owns the GPU
+
+  # blacklist the built-in i915 (so boot never auto-loads the stock driver) and
+  # xe (so the i915-sriov driver owns the GPU). The plugin loads i915 manually
+  # with the SR-IOV parameters below.
   mkdir -p /boot/config/modprobe.d
+  if ! grep -q "^blacklist i915" /boot/config/modprobe.d/i915.conf 2>/dev/null; then
+    echo "blacklist i915" >> /boot/config/modprobe.d/i915.conf
+  fi
   if ! grep -q "^blacklist xe" /boot/config/modprobe.d/i915.conf 2>/dev/null; then
     echo "blacklist xe" >> /boot/config/modprobe.d/i915.conf
   fi
+
+  # the SR-IOV i915 build depends on the compat shim for intel_drm_shim_* symbols;
+  # it MUST be loaded before i915 or modprobe fails with "Unknown symbol".
+  if ! modprobe intel_sriov_compat 2>/dev/null; then
+    log "ERROR: intel_sriov_compat not found - run depmod -a and reinstall the i915-sriov package"
+    return 1
+  fi
+
+  # if i915 is already loaded, make sure it is the SR-IOV build (the stock
+  # build lacks the max_vfs parameter); the stock build is unloaded first so
+  # the replacement can take over the GPU.
+  if lsmod | grep -q '^i915 '; then
+    if modinfo -p i915 2>/dev/null | grep -q '^max_vfs:'; then
+      log "i915 (SR-IOV) already loaded"
+      return 0
+    fi
+    log "Unloading built-in i915 (not SR-IOV) to load the SR-IOV build"
+    if ! modprobe -r i915 2>/dev/null; then
+      log "WARNING: could not unload built-in i915 (in use) - SR-IOV will apply after reboot"
+      return 1
+    fi
+  fi
+
   log "Loading i915 with enable_guc=3 max_vfs=${max_vfs}"
   modprobe i915 enable_guc=3 max_vfs="${max_vfs}" 2>/dev/null || {
-    log "ERROR: modprobe i915 failed - is the i915-sriov package installed?"
+    log "ERROR: modprobe i915 failed - is the i915-sriov package installed and depmod run?"
     return 1
   }
   sleep 3
@@ -527,6 +568,7 @@ intel_do_ensure() {
     log "No Intel GPU detected - skipping i915 SR-IOV setup"
     return 0
   fi
+  intel_cleanup_go
   local pkg
   pkg="$(i915_pkg_file)"
   if [ -z "$(i915_installed_version)" ]; then

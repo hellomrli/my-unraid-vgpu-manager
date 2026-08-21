@@ -1,0 +1,7 @@
+#!/bin/bash
+# emhttp "started" event - bring up the vGPU stacks the user opted into.
+# Runs in the background so it never blocks emhttp startup. rc.vgpu ensure
+# only starts stacks whose *_installed setting is true (never installs).
+RC="/usr/local/emhttp/plugins/my-unraid-vgpu-manager/scripts/rc.vgpu"
+LOG="/var/log/my-unraid-vgpu-manager-boot.log"
+nohup "$RC" ensure >>"$LOG" 2>&1 &

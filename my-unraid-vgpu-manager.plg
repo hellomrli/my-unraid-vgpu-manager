@@ -2,11 +2,11 @@
 <!DOCTYPE PLUGIN [
   <!ENTITY name      "my-unraid-vgpu-manager">
   <!ENTITY author    "hellomrli">
-  <!ENTITY version   "2026.08.21b">
+  <!ENTITY version   "2026.08.21c">
   <!ENTITY launch    "Settings/my-unraid-vgpu-manager">
   <!ENTITY gitURL    "https://github.com/&author;/&name;/raw/master">
   <!ENTITY pluginURL "&gitURL;/&name;.plg">
-  <!ENTITY md5       "8aaa48d811ddc494f4145b9c6f167608">
+  <!ENTITY md5       "2e99190bd7156c02b3dc9aac8bed5e9c">
   <!ENTITY plugin    "/boot/config/plugins/&name;">
   <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
   <!ENTITY packages  "/boot/config/plugins/&name;/packages">
@@ -15,6 +15,17 @@
 <PLUGIN  name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" min="6.11.5" support="https://github.com/&author;/&name;">
 
 <CHANGES>
+##2026.08.21c
+- FIX: Intel i915 SR-IOV driver now loads correctly. The i915-sriov module
+  depends on intel_sriov_compat (intel_drm_shim_* symbols), which must be loaded
+  FIRST - it now is. Also blacklists the stock i915 and unloads it if it was
+  loaded without SR-IOV support, so the replacement takes over.
+- FIX: i915 SR-IOV no longer relies on a manual modprobe in /boot/config/go.
+  A boot event (emhttp started) now brings up both stacks automatically, and any
+  leftover manual "modprobe i915" in go is neutralized (backup kept).
+- FIX: i915 driver package now ships a doinst.sh so depmod runs automatically
+  after install (was why intel_sriov_compat could not be found).
+
 ##2026.08.21b
 - FIX: drivers were pre-downloaded on plugin install/update and by the daily
   update check. Now drivers are ONLY downloaded when you click Install on the
