@@ -1,0 +1,177 @@
+<?xml version='1.0' standalone='yes'?>
+<!DOCTYPE PLUGIN [
+  <!ENTITY name      "my-unraid-vgpu-manager">
+  <!ENTITY author    "hellomrli">
+  <!ENTITY version   "2026.08.21">
+  <!ENTITY launch    "Settings/my-unraid-vgpu-manager">
+  <!ENTITY gitURL    "https://github.com/&author;/&name;/raw/master">
+  <!ENTITY pluginURL "&gitURL;/&name;.plg">
+  <!ENTITY md5       "2f8504aec5d3b7a425eb7abcd7dd8820">
+  <!ENTITY plugin    "/boot/config/plugins/&name;">
+  <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
+  <!ENTITY packages  "/boot/config/plugins/&name;/packages">
+]>
+
+<PLUGIN  name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" min="6.11.5" support="https://github.com/&author;/&name;">
+
+<CHANGES>
+##2026.08.21
+- Unified vGPU manager: NVIDIA vGPU + Intel i915 SR-IOV in one plugin
+- Drivers are NOT installed by default - choose Install from the plugin page
+  (so systems that don't need vGPU stay untouched)
+- NVIDIA: merged driver (vGPU for VMs + host GPU for docker/CUDA), license
+  settings, unlock, vGPU device manager all in the plugin page
+- Intel: i915 SR-IOV driver, VF count management, vfio-pci binding, syslinux
+  boot parameters
+- Driver packages come from the dedicated driver repos:
+  hellomrli/my-vgpu-driver (NVIDIA) and hellomrli/my-i915-sriov-driver (Intel)
+
+##2026.08.20
+- Initial release for the merged vGPU driver plugin
+- MERGED driver: vGPU host driver + standard NVIDIA driver in one package,
+  so the host GPU also works for docker containers (--gpus all), not just VMs
+- Driver: NVIDIA vGPU 16.14 (535.309.01) for Unraid kernel 6.18.44
+- Target GPU: Tesla P4 (native vGPU support, no unlock needed; unlock option
+  kept for consumer GPUs)
+- vGPU devices managed from the plugin page (add/remove/start/stop, live
+  profile list, VM XML snippets), restored at every boot
+- Driver updates install live without a reboot (when no VM holds a vGPU)
+- vgpuConfig.xml override support for GPUs dropped from newer driver XMLs
+- profile_override.toml editable from the plugin page
+
+</CHANGES>
+
+<FILE Run="/bin/bash">
+<INLINE>
+rm -f $(ls /boot/config/plugins/&name;/&name;*.txz 2>/dev/null|grep -v '&version;')
+</INLINE>
+</FILE>
+
+<FILE Name="/boot/config/plugins/&name;/&name;-&version;.txz" Run="upgradepkg --install-new">
+<URL>&gitURL;/packages/&name;-&version;.txz</URL>
+<MD5>&md5;</MD5>
+</FILE>
+
+<FILE Run="/bin/bash">
+<INLINE>
+# LOCAL-FIRST fallback: if the plugin package was placed locally (no GitHub
+# hosting yet), install it from the flash drive.
+if [ ! -d "&emhttp;" ]; then
+  LOCAL_PLUGIN_PKG="$(ls /boot/config/plugins/&name;/&name;*.txz 2>/dev/null | head -1)"
+  if [ -n "${LOCAL_PLUGIN_PKG}" ]; then
+    echo "---Installing local plugin package $(basename "${LOCAL_PLUGIN_PKG}")---"
+    upgradepkg --install-new "${LOCAL_PLUGIN_PKG}"
+  fi
+fi
+</INLINE>
+</FILE>
+
+<FILE Name="&emhttp;/README.md">
+<INLINE>
+**Unraid vGPU Manager**
+
+Unified management of NVIDIA vGPU and Intel i915 SR-IOV on Unraid:
+
+- NVIDIA vGPU (merged driver): split a GPU into virtual GPUs (mdev) for VMs,
+  while the host keeps full GPU access for docker (--gpus all). License
+  settings, unlock and device management all live in the plugin page.
+- Intel i915 SR-IOV: split an Intel iGPU into up to 7 VFs for VM passthrough.
+  VF count, vfio-pci binding and syslinux boot parameters are managed here.
+
+Drivers are installed on demand from the plugin page - installing this plugin
+does not touch your GPU setup until you choose to.
+</INLINE>
+</FILE>
+
+<FILE Run="/bin/bash">
+<INLINE>
+
+KERNEL_V="$(uname -r)"
+
+#Create settings file if not found and migrate missing keys
+if [ ! -f "&plugin;/settings.cfg" ]; then
+  echo 'first_installation=true
+driver_version=latest
+update_check=true
+unlock=false
+nvidia_installed=false
+nvidia_license_server=
+nvidia_license_port=443
+nvidia_feature_type=0
+nvidia_load_uvm=true
+nvidia_load_modeset=true
+nvidia_load_drm=true
+intel_installed=false
+intel_vf_number=7' > "&plugin;/settings.cfg"
+fi
+for key in unlock update_check nvidia_installed intel_installed; do
+  if ! grep -q "^${key}=" "&plugin;/settings.cfg"; then
+    echo "${key}=false" >> "&plugin;/settings.cfg"
+  fi
+done
+if ! grep -q "^nvidia_license_server=" "&plugin;/settings.cfg"; then
+  echo "nvidia_license_server=" >> "&plugin;/settings.cfg"
+fi
+if ! grep -q "^nvidia_license_port=" "&plugin;/settings.cfg"; then
+  echo "nvidia_license_port=443" >> "&plugin;/settings.cfg"
+fi
+if ! grep -q "^nvidia_feature_type=" "&plugin;/settings.cfg"; then
+  echo "nvidia_feature_type=0" >> "&plugin;/settings.cfg"
+fi
+if ! grep -q "^intel_vf_number=" "&plugin;/settings.cfg"; then
+  echo "intel_vf_number=7" >> "&plugin;/settings.cfg"
+fi
+
+#Move old flat package directory layout to per-kernel directories
+mkdir -p "&packages;/${KERNEL_V%%-*}"
+if find &packages; -maxdepth 1 -type f -name "*.txz" 2>/dev/null | grep -q . ; then
+  mv $(find &packages; -maxdepth 1 -type f -name "*.txz*") "&packages;/${KERNEL_V%%-*}/" 2>/dev/null
+fi
+
+#Pre-fetch the driver packages for this kernel so the page can install
+#instantly. This only downloads - it does NOT install or load anything.
+/bin/bash &emhttp;/include/download.sh nvidia || true
+/bin/bash &emhttp;/include/download.sh i915 || true
+
+#Enable the daily update check
+if [ "$(grep "^update_check=" "&plugin;/settings.cfg" | cut -d '=' -f2)" == "true" ]; then
+  if ! crontab -l 2>/dev/null | grep -q "&emhttp;/include/update-check.sh"; then
+    (crontab -l 2>/dev/null ; echo "$((RANDOM % 59)) $(shuf -i 8-9 -n 1) * * * &emhttp;/include/update-check.sh &amp;>/dev/null 2>&amp;1") | crontab -
+  fi
+fi
+
+#First installation hint
+if [ "$(grep "^first_installation=" "&plugin;/settings.cfg" | cut -d '=' -f2)" == "true" ]; then
+  /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Unraid vGPU Manager" -d "Installation successful! Go to Settings -> Unraid vGPU Manager to install a driver and configure your GPUs." -l "/&launch;"
+  sed -i '/^first_installation=/c\first_installation=false' "&plugin;/settings.cfg"
+fi
+echo
+echo "----- Unraid vGPU Manager plugin v&version; ready -----"
+echo "Drivers are NOT installed by default - use the plugin page to install."
+
+</INLINE>
+</FILE>
+
+<FILE Run="/bin/bash" Method="remove">
+<INLINE>
+
+echo "-----------------------------------------------"
+echo "---Uninstalling Unraid vGPU Manager...---"
+echo "-----------------------------------------------"
+#Stop configured devices and daemons
+/bin/bash &emhttp;/scripts/rc.vgpu stop 2>/dev/null
+#Remove the update check cron job
+crontab -l 2>/dev/null | grep -v "&emhttp;/include/update-check.sh" | crontab -
+#Remove plugin related files (the kernel modules stay loaded until reboot)
+removepkg &name;-&version;
+rm -rf /usr/local/emhttp/plugins/&name;
+rm -rf &plugin;
+echo
+echo "-----------------------------------------------------------------------"
+echo "---Unraid vGPU Manager uninstalled, please reboot to unload the drivers---"
+echo "-----------------------------------------------------------------------"
+echo
+
+</INLINE>
+</FILE>
+</PLUGIN>
