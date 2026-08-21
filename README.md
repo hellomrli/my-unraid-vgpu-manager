@@ -1,53 +1,43 @@
 # my-unraid-vgpu-manager
 
-Unraid plugin for **unified management of GPU virtualization**: NVIDIA vGPU
-and Intel i915 SR-IOV, all from one settings page.
+Unraid 插件：**统一管理 GPU 虚拟化** —— NVIDIA vGPU 与 Intel i915 SR-IOV，全部在一个设置页面中完成。
 
-## What it does
+## 功能一览
 
 | | NVIDIA vGPU | Intel i915 SR-IOV |
 |---|---|---|
-| Driver | merged driver (vGPU + host CUDA/docker) | i915-sriov-dkms (strongtz) |
-| Install | on-demand from the page | on-demand from the page |
-| Manage | license, unlock, vGPU devices (mdev) | VF count, vfio-pci binding, boot params |
+| 驱动 | Merged 驱动（vGPU + 宿主机 CUDA/docker） | i915-sriov-dkms（strongtz） |
+| 安装 | 页面按需安装 | 页面按需安装 |
+| 管理 | License 设置、解锁、vGPU 设备（mdev） | VF 数量、vfio-pci 绑定、启动参数 |
 
-**Drivers are never installed automatically** - you choose Install from the
-plugin page when you actually need vGPU. Systems that don't use vGPU stay
-completely untouched.
+**驱动不会自动安装**——只有在你确实需要 vGPU 时，才在插件页面点击安装。不使用 vGPU 的系统完全不受影响。
 
-## Driver sources
+## 驱动来源
 
-The plugin downloads driver packages built by two dedicated projects
-(GitHub Actions cloud builds), keyed by the running kernel:
+插件从两个独立项目下载驱动包（GitHub Actions 云编译），按当前内核版本匹配：
 
-- NVIDIA: [hellomrli/my-nvidia-vgpu-driver](https://github.com/hellomrli/my-nvidia-vgpu-driver)
-  - `nvidia-<ver>-<kernel>-Unraid-<b>.txz` from Release tag `<kernel>`
-- Intel: [hellomrli/my-i915-sriov-driver](https://github.com/hellomrli/my-i915-sriov-driver)
-  - `i915-sriov-<ver>-<kernel>-Unraid-<b>.txz` from Release tag `<kernel>`
+- NVIDIA：[hellomrli/my-nvidia-vgpu-driver](https://github.com/hellomrli/my-nvidia-vgpu-driver)
+  - Release tag = 内核版本，资产 `nvidia-<版本>-<内核>-Unraid-<构建号>.txz`
+- Intel：[hellomrli/my-i915-sriov-driver](https://github.com/hellomrli/my-i915-sriov-driver)
+  - Release tag = 内核版本，资产 `i915-sriov-<版本>-<内核>-Unraid-<构建号>.txz`
 
-If no package exists for your kernel yet, run the build workflow in the
-corresponding driver repo (they accept any Unraid kernel release).
+如果当前内核还没有对应驱动包，在对应驱动仓库手动运行云编译工作流即可（接受任意 Unraid 内核版本）。
 
-## Install
+## 安装
 
-In Unraid, add the plugin URL:
+在 Unraid 中添加插件 URL：
 
 ```
 https://github.com/hellomrli/my-unraid-vgpu-manager/raw/master/my-unraid-vgpu-manager.plg
 ```
 
-Then open **Settings -> Unraid vGPU Manager**:
+然后打开 **设置 → Unraid vGPU Manager**：
 
-1. **NVIDIA vGPU** - click *Install NVIDIA vGPU Driver*, set your license
-   server (FastAPI-DLS host:port), add vGPU devices with the profiles shown,
-   and assign the generated hostdev XML to VMs. The same GPU stays usable for
-   docker with `--gpus all`.
-2. **Intel i915 SR-IOV** - click *Install Intel i915 SR-IOV Driver*, set the
-   VF count, and add the boot parameters shown to the syslinux append line.
+1. **NVIDIA vGPU** —— 点击 *安装 NVIDIA vGPU 驱动*，设置 License 服务器（FastAPI-DLS 的 host:port），用页面显示的性能档位添加 vGPU 设备，把生成的 hostdev XML 附加到虚拟机。同一张 GPU 仍可通过 `--gpus all` 给 docker 使用。
+2. **Intel i915 SR-IOV** —— 点击 *安装 Intel i915 SR-IOV 驱动*，设置 VF 数量，并把页面显示的启动参数加到 syslinux 的 append 行。
 
-## Notes
+## 注意事项
 
-- NVIDIA vGPU devices (mdev) are restored at every boot automatically.
-- Unlocking consumer GPUs is optional and off by default; Tesla P4 is natively
-  vGPU-capable (no unlock).
-- For VMs, always passthrough Intel **VFs** (00:02.x), never the PF (00:02.0).
+- NVIDIA vGPU 设备（mdev）每次开机自动恢复
+- 消费级 GPU 解锁默认关闭；Tesla P4 原生支持 vGPU（无需解锁）
+- Intel 直通时只能直通 **VF**（00:02.x），绝不能直通 PF（00:02.0）
