@@ -2,11 +2,11 @@
 <!DOCTYPE PLUGIN [
   <!ENTITY name      "my-unraid-vgpu-manager">
   <!ENTITY author    "hellomrli">
-  <!ENTITY version   "2026.08.21f">
+  <!ENTITY version   "2026.08.21g">
   <!ENTITY launch    "Settings/my-unraid-vgpu-manager">
   <!ENTITY gitURL    "https://github.com/&author;/&name;/raw/master">
   <!ENTITY pluginURL "&gitURL;/&name;.plg">
-  <!ENTITY md5       "242c4a7b39c566a4c0e7e4f48f1833d6">
+  <!ENTITY md5       "3c73823cf906c676ffe3a6c3dadaf703">
   <!ENTITY plugin    "/boot/config/plugins/&name;">
   <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
   <!ENTITY packages  "/boot/config/plugins/&name;/packages">
@@ -15,6 +15,10 @@
 <PLUGIN  name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" min="6.11.5" support="https://github.com/&author;/&name;">
 
 <CHANGES>
+##2026.08.21g
+- CHG: Settings page tabs restyled as plain pagination buttons (no icons,
+  no bold highlight) for a cleaner look.
+
 ##2026.08.21f
 - REMOVE: invalid "options nvidia cudahost=1" from nvidia_setup_config.
   The MERGED driver needs no cudahost/vup_kunlock modprobe params (both are

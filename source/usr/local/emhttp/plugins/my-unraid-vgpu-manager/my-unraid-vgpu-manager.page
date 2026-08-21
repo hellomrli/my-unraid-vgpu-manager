@@ -367,10 +367,10 @@ tr.vgpu-selected {background: rgba(76,175,80,.18) !important;}
 tr.vgpu-soldout {opacity: .45; cursor: not-allowed;}
 .vgpu-mono {font-family: bitstream, monospace;}
 #override_area {width: 100%; max-width: 900px; height: 220px; font-family: bitstream, monospace;}
-.vgpu-tabs {display: flex; gap: 4px; margin: 0 0 16px 0; border-bottom: 1px solid rgba(125,125,125,.3); flex-wrap: wrap;}
-.vgpu-tab {background: none; border: 1px solid transparent; border-bottom: none; border-radius: 6px 6px 0 0; padding: 8px 16px; cursor: pointer; font-size: 1.05rem; color: inherit;}
-.vgpu-tab:hover {background: rgba(125,125,125,.12);}
-.vgpu-tab.active {border-color: rgba(125,125,125,.3); background: var(--background-alt, rgba(125,125,125,.08)); font-weight: bold;}
+.vgpu-tabs {margin: 0 0 16px 0;}
+.vgpu-tab {background: none; border: 1px solid rgba(125,125,125,.4); border-radius: 3px; padding: 4px 14px; cursor: pointer; color: inherit; margin-right: 6px;}
+.vgpu-tab:hover {border-color: rgba(125,125,125,.7);}
+.vgpu-tab.active {background: rgba(125,125,125,.2); border-color: rgba(125,125,125,.6);}
 .vgpu-tab-content {display: none;}
 .vgpu-tab-content.active {display: block;}
 </style>
@@ -384,9 +384,9 @@ tr.vgpu-soldout {opacity: .45; cursor: not-allowed;}
 <?php if ($vgpu_msg): ?><div class="vgpu-banner msg"><i class="fa fa-check"></i> <?= htmlspecialchars($vgpu_msg) ?></div><?php endif; ?>
 
 <div class="vgpu-tabs">
-  <button type="button" class="vgpu-tab active" onclick="switchTab('tab-drivers', this)"><i class="fa fa-download"></i>&nbsp; Drivers</button>
-  <button type="button" class="vgpu-tab" onclick="switchTab('tab-nvidia', this)"><i class="fa fa-cube"></i>&nbsp; NVIDIA GPU</button>
-  <button type="button" class="vgpu-tab" onclick="switchTab('tab-i915', this)"><i class="fa fa-microchip"></i>&nbsp; Intel i915 SR-IOV</button>
+  <button type="button" class="vgpu-tab active" onclick="switchTab('tab-drivers', this)">Drivers</button>
+  <button type="button" class="vgpu-tab" onclick="switchTab('tab-nvidia', this)">NVIDIA GPU</button>
+  <button type="button" class="vgpu-tab" onclick="switchTab('tab-i915', this)">Intel i915 SR-IOV</button>
 </div>
 
 <!-- ==================== Tab 1: Drivers ==================== -->
