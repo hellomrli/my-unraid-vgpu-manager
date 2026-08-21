@@ -12,14 +12,14 @@ Unraid 插件：**统一管理 GPU 虚拟化** —— NVIDIA vGPU 与 Intel i915
 |---|---|
 | **Tesla / 数据中心卡（vGPU 认证）** | ✅ **原生支持，无需解锁**。535 分支覆盖 Pascal（Tesla P4 / P6 / P40 / P100）、Volta（V100）、Turing（Tesla T4）等。**本项目实测验证的目标卡是 Tesla P4**。 |
 | **Quadro / 专业卡（vGPU 认证）** | ✅ 原生支持（如 RTX A 系列、Quadro RTX 系列中带 vGPU 认证的型号）。 |
-| **普通消费级游戏卡（GTX / RTX 游戏卡）** | ❌ **当前不支持**。详见下方说明。 |
+| **普通消费级游戏卡（GTX / RTX 游戏卡）** | ⚠️ 需开启 **vGPU unlock** 开关，仅支持到 **Turing（RTX 20 系列）**，且**未经实测**。详见下方说明。 |
 
 **关于普通 RTX / GTX 游戏卡（例如 RTX 3060 / 3070 / 3080 / 3090 / 4070 / 4090 等）：**
 
 - NVIDIA 通过软件限制屏蔽了消费级显卡的 vGPU 功能，这类卡**不在官方 vGPU 认证名单**里。
-- 开源项目 [vgpu_unlock](https://github.com/mbilker/vgpu_unlock-rs) 可以绕过这一限制，但它的消费卡支持范围仅到 **Maxwell / Pascal / Turing**（GTX 9 / 10 系列、RTX 20 系列）；**Ampere（RTX 30 系列）是 work-in-progress，Ada Lovelace（RTX 40 系列）不支持**。
-- **本插件页面上的 "vGPU unlock" 开关目前只是一个预留位，驱动包里尚未真正集成 vgpu_unlock-rs 的 hook 库（`libvgpu_unlock_rs.so`），因此该开关现阶段不会生效。**
-- 结论：**如果你手里是普通 RTX 游戏卡（尤其是 30 / 40 系列），当前这套驱动无法给你提供 vGPU。** 请使用 vGPU 认证的 Tesla/专业卡（推荐 Tesla P4，性价比高且原生支持）。
+- 本插件已内置开源 [vgpu_unlock](https://github.com/DualCoder/vgpu_unlock) / [vgpu_unlock-rs](https://github.com/mbilker/vgpu_unlock-rs) 的两层组件：**内核补丁**（`vgpu_unlock_hooks.c` + `kern.ld`，已适配 535.x）打进 `nvidia.ko`，**用户空间库**（`libvgpu_unlock_rs.so`）通过 `LD_PRELOAD` 注入守护进程。打开 NVIDIA GPU 页的 **vGPU unlock** 开关即可启用。
+- 消费卡支持范围：**Maxwell / Pascal / Turing**（GTX 9 / 10 系列、RTX 20 系列）；**Ampere（RTX 30 系列）是 work-in-progress，Ada Lovelace（RTX 40 系列）不支持**。
+- 结论：**GTX 9/10 或 RTX 20 系列可尝试开启 unlock 使用（未经实测）；RTX 30 / 40 系列游戏卡无法提供 vGPU。** 稳妥起见仍推荐 vGPU 认证的 Tesla/专业卡（推荐 Tesla P4，原生支持、已验证）。
 
 ### Intel i915 SR-IOV —— 支持哪些核显？
 
