@@ -2,11 +2,11 @@
 <!DOCTYPE PLUGIN [
   <!ENTITY name      "my-unraid-vgpu-manager">
   <!ENTITY author    "hellomrli">
-  <!ENTITY version   "2026.08.21a">
+  <!ENTITY version   "2026.08.21b">
   <!ENTITY launch    "Settings/my-unraid-vgpu-manager">
   <!ENTITY gitURL    "https://github.com/&author;/&name;/raw/master">
   <!ENTITY pluginURL "&gitURL;/&name;.plg">
-  <!ENTITY md5       "44f9edb9d89eedbd2c7dd3a6e8990f02">
+  <!ENTITY md5       "8aaa48d811ddc494f4145b9c6f167608">
   <!ENTITY plugin    "/boot/config/plugins/&name;">
   <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
   <!ENTITY packages  "/boot/config/plugins/&name;/packages">
@@ -15,6 +15,12 @@
 <PLUGIN  name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" min="6.11.5" support="https://github.com/&author;/&name;">
 
 <CHANGES>
+##2026.08.21b
+- FIX: drivers were pre-downloaded on plugin install/update and by the daily
+  update check. Now drivers are ONLY downloaded when you click Install on the
+  plugin page. Installing/updating the plugin itself never touches your network
+  or downloads any driver.
+
 ##2026.08.21a
 - FIX: settings page was blank (white screen) - a bash-style ${var%:*} string
   was accidentally used inside PHP, causing a PHP parse error. Replaced with
@@ -133,10 +139,9 @@ if find &packages; -maxdepth 1 -type f -name "*.txz" 2>/dev/null | grep -q . ; t
   mv $(find &packages; -maxdepth 1 -type f -name "*.txz*") "&packages;/${KERNEL_V%%-*}/" 2>/dev/null
 fi
 
-#Pre-fetch the driver packages for this kernel so the page can install
-#instantly. This only downloads - it does NOT install or load anything.
-/bin/bash &emhttp;/include/download.sh nvidia || true
-/bin/bash &emhttp;/include/download.sh i915 || true
+#Drivers are NEVER downloaded or installed by the plugin itself - only when
+#the user explicitly clicks Install on the plugin page (exec.sh install_nvidia
+#/ install_intel call download.sh). Systems that don't use vGPU stay untouched.
 
 #Enable the daily update check
 if [ "$(grep "^update_check=" "&plugin;/settings.cfg" | cut -d '=' -f2)" == "true" ]; then
