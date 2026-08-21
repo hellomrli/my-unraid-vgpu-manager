@@ -46,7 +46,7 @@ get_selected_version() {
 update_driver() {
   local want="${1:-latest}"
   sed -i "/^driver_version=/c\driver_version=${want}" "${SETTINGS}" 2>/dev/null
-  if "${EMHTTP}/include/download.sh" "${want}"; then
+  if "${EMHTTP}/include/download.sh" nvidia "${want}"; then
     echo
     "${RC}" update
   else

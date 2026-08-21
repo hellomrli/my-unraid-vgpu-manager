@@ -29,7 +29,7 @@ fi
 
 [ "${LATEST_V}" = "${INSTALLED_V}" ] && exit 0
 
-if "${EMHTTP}/include/download.sh" latest >/dev/null 2>&1; then
+if "${EMHTTP}/include/download.sh" nvidia latest >/dev/null 2>&1; then
   notify "New Nvidia vGPU driver v${LATEST_V} downloaded! Open Settings -> Novidio vGPU and click 'Update Now' to install it without a reboot."
 else
   notify "New Nvidia vGPU driver v${LATEST_V} found but the download failed. Please try from the plugin page." "alert"
