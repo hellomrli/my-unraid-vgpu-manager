@@ -9,7 +9,7 @@ EMHTTP="/usr/local/emhttp/plugins/${PLUGIN}"
 KERNEL_V="$(uname -r)"
 
 notify() {
-  /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Nvidia vGPU Driver" -d "$1" -i "${2:-normal}" -l "/Settings/${PLUGIN}"
+  /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Unraid vGPU Manager" -d "$1" -i "${2:-normal}" -l "/Settings/${PLUGIN}"
 }
 
 # only auto-check when the user follows the latest version
@@ -30,7 +30,7 @@ fi
 [ "${LATEST_V}" = "${INSTALLED_V}" ] && exit 0
 
 if "${EMHTTP}/include/download.sh" nvidia latest >/dev/null 2>&1; then
-  notify "New Nvidia vGPU driver v${LATEST_V} downloaded! Open Settings -> Novidio vGPU and click 'Update Now' to install it without a reboot."
+  notify "New driver v${LATEST_V} downloaded! Open Settings -> Unraid vGPU Manager and click the Install button."
 else
-  notify "New Nvidia vGPU driver v${LATEST_V} found but the download failed. Please try from the plugin page." "alert"
+  notify "New driver v${LATEST_V} found but the download failed. Please try from the plugin page." "alert"
 fi
