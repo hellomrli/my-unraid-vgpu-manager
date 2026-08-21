@@ -114,6 +114,7 @@ nvidia_setup_config() {
   ln -sf "${USERCFG}/profile_override.toml" "${UNLOCK_DIR}/profile_override.toml"
   local unlock
   unlock="$(setting nvidia_unlock)"
+  [ -n "${unlock}" ] || unlock="$(setting unlock)"
   [ "${unlock}" = "true" ] || unlock="false"
   echo "unlock = ${unlock}" > "${UNLOCK_DIR}/config.toml"
   if [ -f "${XML_OVERRIDE}" ] && [ -d "$(dirname "${XML_TARGET}")" ]; then
@@ -251,6 +252,7 @@ daemons_start() {
   pgrep -x nvidia-vgpu-mgr >/dev/null || rm -f /var/run/nvidia-vgpu-mgr/*.pid 2>/dev/null
   local unlock
   unlock="$(setting nvidia_unlock)"
+  [ -n "${unlock}" ] || unlock="$(setting unlock)"
   if [ "${unlock}" = "true" ] && [ -f "${UNLOCK_LIB}" ]; then
     log "Starting nvidia-vgpud (with vgpu_unlock)"
     LD_PRELOAD="${UNLOCK_LIB}" nvidia-vgpud
