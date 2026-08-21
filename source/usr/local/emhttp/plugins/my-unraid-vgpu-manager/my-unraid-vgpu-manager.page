@@ -177,8 +177,8 @@ $intel_pf    = trim(shell_exec("lspci -D 2>/dev/null | grep -E 'VGA compatible c
 $intel_vfs   = '';
 $intel_total = '';
 if ($intel_pf) {
-  $intel_vfs   = trim(@file_get_contents("/sys/devices/pci{$intel_pf%:*}/$intel_pf/sriov_numvfs"));
-  $intel_total = trim(@file_get_contents("/sys/devices/pci{$intel_pf%:*}/$intel_pf/sriov_totalvfs"));
+  $intel_vfs   = trim(@file_get_contents("/sys/bus/pci/devices/$intel_pf/sriov_numvfs"));
+  $intel_total = trim(@file_get_contents("/sys/bus/pci/devices/$intel_pf/sriov_totalvfs"));
 }
 $nvidia_inst = vgpu_setting('nvidia_installed', 'false') === 'true';
 $intel_inst  = vgpu_setting('intel_installed', 'false') === 'true';
@@ -587,7 +587,7 @@ if ($intel_pf) {
   $out = shell_exec("lspci -D 2>/dev/null | grep -E 'VGA compatible controller|Display controller' | grep -i intel | awk '{print \$1}' | grep -v '\\.0' | sort");
   foreach (preg_split('/\s+/', trim($out)) as $vf) {
     if ($vf === '') continue;
-    $drv = @readlink("/sys/devices/pci{$vf%:*}/$vf/driver");
+    $drv = @readlink("/sys/bus/pci/devices/$vf/driver");
     $drv = $drv ? basename($drv) : 'none';
     $vf_list[] = [$vf, $drv];
   }

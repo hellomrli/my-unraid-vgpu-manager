@@ -6,7 +6,7 @@
   <!ENTITY launch    "Settings/my-unraid-vgpu-manager">
   <!ENTITY gitURL    "https://github.com/&author;/&name;/raw/master">
   <!ENTITY pluginURL "&gitURL;/&name;.plg">
-  <!ENTITY md5       "e0b451566101da442fa0a3825045a032">
+  <!ENTITY md5       "44f9edb9d89eedbd2c7dd3a6e8990f02">
   <!ENTITY plugin    "/boot/config/plugins/&name;">
   <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
   <!ENTITY packages  "/boot/config/plugins/&name;/packages">
