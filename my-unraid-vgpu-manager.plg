@@ -2,11 +2,11 @@
 <!DOCTYPE PLUGIN [
   <!ENTITY name      "my-unraid-vgpu-manager">
   <!ENTITY author    "hellomrli">
-  <!ENTITY version   "2026.08.29">
+  <!ENTITY version   "2026.08.29b">
   <!ENTITY launch    "Settings/my-unraid-vgpu-manager">
   <!ENTITY gitURL    "https://github.com/&author;/&name;/raw/master">
   <!ENTITY pluginURL "&gitURL;/&name;.plg">
-  <!ENTITY md5       "732a60e29662d70c8e6a1f5ebf82ab92">
+  <!ENTITY md5       "7dcddd6efbad7fea24579b5adeaaa291">
   <!ENTITY plugin    "/boot/config/plugins/&name;">
   <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
   <!ENTITY packages  "/boot/config/plugins/&name;/packages">
@@ -15,6 +15,21 @@
 <PLUGIN  name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" min="6.11.5" support="https://github.com/&author;/&name;">
 
 <CHANGES>
+##2026.08.29b
+- ADD: dual driver series support. The driver repo now publishes BOTH the
+  16.x LTS (535.309.01) and the 19.x LTS (580.178.05) merged drivers for each
+  Unraid kernel. After detecting the installed GPU model the plugin offers the
+  matching series: Pascal cards (P4/P40/P100, dropped from branch 17 on) get
+  16.x only, T4-and-newer GPUs get a choice with 19.x recommended, and GPUs
+  supported by both get a series picker.
+- ADD: "Driver series" setting (auto/16/19) in License &amp; Modules; the series
+  is scoped through download, update-check, install and live-update (both
+  series can coexist on the flash drive; auto follows the hardware).
+- ADD: driver series shown on the status panels (installed series + what the
+  hardware supports).
+- NOTE: the vgpu_unlock kernel patch is only built into the 16.x series (the
+  config magic is 535-specific). Native vGPU cards (P4 etc.) never need it.
+
 ##2026.08.29
 - FIX: driver package cleanup no longer deletes the other driver type's
   package (nvidia and i915 share the packages/&lt;kernel&gt;/ directory) -
@@ -193,6 +208,9 @@ for key in unlock update_check nvidia_installed intel_installed; do
     echo "${key}=false" >> "&plugin;/settings.cfg"
   fi
 done
+if ! grep -q "^nvidia_series=" "&plugin;/settings.cfg"; then
+  echo "nvidia_series=auto" >> "&plugin;/settings.cfg"
+fi
 if ! grep -q "^nvidia_license_server=" "&plugin;/settings.cfg"; then
   echo "nvidia_license_server=" >> "&plugin;/settings.cfg"
 fi

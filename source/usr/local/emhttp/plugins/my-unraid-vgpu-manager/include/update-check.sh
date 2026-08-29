@@ -22,14 +22,16 @@ ver_of() {
   printf '%s' "$1" | sed -E "s/^${2}-([0-9.]+)-.*/\1/"
 }
 
-# check one driver repo; only notify when that driver is actually installed
+# check one driver repo; only notify when that driver is actually installed.
+# glob (optional) restricts the asset match to one series (nvidia-535.* vs
+# nvidia-580.*) so a 16.x install is never told to "update" to 19.x.
 check_repo() {
-  local repo="$1" prefix="$2" installed="$3"
+  local repo="$1" prefix="$2" installed="$3" glob="${4:-}"
   [ -n "${installed}" ] || return 0
   local latest
   latest="$(wget -T 15 -qO- "https://api.github.com/repos/${repo}/releases/tags/${KERNEL_V}" 2>/dev/null \
     | jq -r '.assets[].name' 2>/dev/null \
-    | grep "^${prefix}-" | grep -E -v '\.md5$' \
+    | grep "^${prefix}-${glob}" | grep -E -v '\.md5$' \
     | sed -E "s/^${prefix}-([0-9.]+)-.*/\1/" \
     | sort -V | uniq | tail -1)"
   if [ -n "${latest}" ] && [ "${latest}" != "${installed}" ]; then
@@ -39,5 +41,10 @@ check_repo() {
 
 # installed version: nvidia from modinfo, i915 from the installed package name
 I915_PKG="$(ls "${PLGCFG}/packages/${KERNEL_V%%-*}/"i915-sriov-*.txz 2>/dev/null | head -1)"
-check_repo "hellomrli/my-nvidia-vgpu-driver" "nvidia"     "$(modinfo -F version nvidia 2>/dev/null | head -1)"
+# nvidia: only check the series that is installed (535.* = 16.x, 580.* = 19.x)
+inst_nvidia="$(modinfo -F version nvidia 2>/dev/null | head -1)"
+case "${inst_nvidia}" in
+  535.*) check_repo "hellomrli/my-nvidia-vgpu-driver" "nvidia" "${inst_nvidia}" "535." ;;
+  580.*) check_repo "hellomrli/my-nvidia-vgpu-driver" "nvidia" "${inst_nvidia}" "580." ;;
+esac
 check_repo "hellomrli/my-i915-sriov-driver"  "i915-sriov" "$(ver_of "$(basename "${I915_PKG}" 2>/dev/null)" "i915-sriov")"

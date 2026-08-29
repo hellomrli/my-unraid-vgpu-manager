@@ -129,6 +129,8 @@ if (!empty($_POST['vgpu_action'])) {
       $lfeat = trim($_POST['feature_type'] ?? '0');
       if (!ctype_digit($lport)) $lport = '443';
       if (!ctype_digit($lfeat)) $lfeat = '0';
+      $dseries = trim($_POST['driver_series'] ?? 'auto');
+      if (!in_array($dseries, ['auto','16','19'], true)) $dseries = 'auto';
       $unlock = (isset($_POST['unlock']) && $_POST['unlock'] === 'true') ? 'true' : 'false';
       $uvm = (isset($_POST['load_uvm']) && $_POST['load_uvm'] === 'true') ? 'true' : 'false';
       $modeset = (isset($_POST['load_modeset']) && $_POST['load_modeset'] === 'true') ? 'true' : 'false';
@@ -136,6 +138,7 @@ if (!empty($_POST['vgpu_action'])) {
       vgpu_set_setting('nvidia_license_server', $lsrv);
       vgpu_set_setting('nvidia_license_port', $lport);
       vgpu_set_setting('nvidia_feature_type', $lfeat);
+      vgpu_set_setting('nvidia_series', $dseries);
       vgpu_set_setting('nvidia_unlock', $unlock);
       vgpu_set_setting('nvidia_load_uvm', $uvm);
       vgpu_set_setting('nvidia_load_modeset', $modeset);
@@ -204,7 +207,7 @@ $nvidia_inst = vgpu_setting('nvidia_installed', 'false') === 'true';
 $intel_inst  = vgpu_setting('intel_installed', 'false') === 'true';
 
 /* NVIDIA GPUs + their mdev types straight from sysfs */
-$gpus = []; $gpu_types = []; $types_present = false;
+$gpus = []; $gpu_ids = []; $gpu_types = []; $types_present = false;
 foreach (glob("/sys/bus/pci/devices/*") as $dev) {
   $vendor = trim(@file_get_contents("$dev/vendor"));
   $class  = trim(@file_get_contents("$dev/class"));
@@ -212,6 +215,7 @@ foreach (glob("/sys/bus/pci/devices/*") as $dev) {
   $pci  = basename($dev);
   $name = trim(shell_exec("lspci -s ".escapeshellarg(substr($pci, 5))." 2>/dev/null | cut -d ':' -f3-"));
   $gpus[$pci] = $name ?: "NVIDIA GPU";
+  $gpu_ids[$pci] = strtolower(trim(@file_get_contents("$dev/device")));
   $gpu_types[$pci] = [];
   foreach (glob("$dev/mdev_supported_types/*") as $tdir) {
     $types_present = true;
@@ -237,6 +241,28 @@ foreach (glob("/sys/bus/pci/devices/*") as $dev) {
 $devices = vgpu_devices();
 foreach ($devices as &$d) $d['running'] = is_dir("/sys/bus/mdev/devices/{$d['uuid']}");
 unset($d);
+
+/* which vGPU driver series the installed hardware supports - device id lists
+ * taken from each branch's vgpuConfig.xml:
+ *   16.x = 535.309.01 (LTS, last branch with Pascal: P4/P40/P100/P6)
+ *   19.x = 580.178.05 (LTS, Turing T4 and newer, plus Blackwell) */
+$vgpu16_ids = array_fill_keys(explode(' ', '0x13bd 0x13f2 0x13f3 0x15f7 0x15f8 0x15f9 0x1b38 0x1bb3 0x1bb4 0x1db1 0x1db3 0x1db4 0x1db5 0x1db6 0x1df6 0x1e30 0x1e78 0x1eb8 0x2230 0x2231 0x2233 0x2235 0x2236 0x2238 0x25b6 0x26b1 0x26b2 0x26b5 0x26b9 0x26ba 0x27b6 0x27b8'), true);
+$vgpu19_ids = array_fill_keys(explode(' ', '0x13bd 0x1db1 0x1db3 0x1db4 0x1db5 0x1db6 0x1df6 0x1e30 0x1e78 0x1eb8 0x2230 0x2231 0x2233 0x2235 0x2236 0x2238 0x25b6 0x26b1 0x26b2 0x26b3 0x26b5 0x26b9 0x26ba 0x27b6 0x27b8 0x2bb5 0x2bb9 0x2c3a'), true);
+$any16 = true; $any19 = true; $anyGpu = false;
+foreach ($gpu_ids as $id) {
+  $anyGpu = true;
+  if (!isset($vgpu16_ids[$id])) $any16 = false;
+  if (!isset($vgpu19_ids[$id])) $any19 = false;
+}
+if (!$anyGpu)             $series_caps = 'none';
+elseif ($any16 && $any19) $series_caps = 'both';
+elseif ($any16)           $series_caps = '16';
+elseif ($any19)           $series_caps = '19';
+else                      $series_caps = 'none';
+$series_sel = vgpu_setting('nvidia_series', 'auto');
+$series_eff = in_array($series_sel, ['16','19']) ? $series_sel : (($series_caps === '19') ? '19' : '16');
+/* series of the currently installed driver (535.* = 16.x, 580.* = 19.x) */
+$series_inst = (strpos((string)$installed_v, '580.') === 0) ? '19' : ((strpos((string)$installed_v, '535.') === 0) ? '16' : '');
 
 /* libvirt VMs + which vGPU mdev each VM currently has attached (persistent config) */
 $vm_list = array_values(array_filter(array_map('trim',
@@ -343,12 +369,12 @@ function restartServices() {
   openBox('/plugins/my-unraid-vgpu-manager/include/exec.sh&arg1=restart_services', 'Restarting vGPU Services', 600, 900, true);
 }
 
-function updateDriver() {
-  openBox('/plugins/my-unraid-vgpu-manager/include/exec.sh&arg1=update_driver&arg2=latest', 'Updating Nvidia vGPU Driver', 600, 900, true);
+function updateDriver(series) {
+  openBox('/plugins/my-unraid-vgpu-manager/include/exec.sh&arg1=update_driver&arg2='+(series||'16')+'&arg3=latest', 'Updating Nvidia vGPU Driver', 600, 900, true);
 }
 
-function installNvidia() {
-  openBox('/plugins/my-unraid-vgpu-manager/include/exec.sh&arg1=install_nvidia', 'Installing NVIDIA vGPU Driver', 600, 900, true);
+function installNvidia(series) {
+  openBox('/plugins/my-unraid-vgpu-manager/include/exec.sh&arg1=install_nvidia&arg2='+(series||'16'), 'Installing NVIDIA vGPU Driver', 600, 900, true);
 }
 
 function uninstallNvidia() {
@@ -448,13 +474,42 @@ your GPU setup until you click Install.</p>
 <?php if (!$nvidia_inst): ?>
 <div class="vgpu-banner warn"><i class="fa fa-download"></i>
 The NVIDIA vGPU driver is not installed yet.
-<input type="button" value="Install NVIDIA vGPU Driver" onclick="installNvidia()" style="margin-left:12px">
+<?php if ($series_caps === 'both'): ?>
+<br><span style="opacity:.8"><i class="fa fa-microchip"></i> Detected:
+<?= htmlspecialchars(implode('; ', array_map(fn($p) => htmlspecialchars($gpus[$p])." ({$gpu_ids[$p]})", array_keys($gpus)))) ?> -
+supported by <b>both</b> series. 16.x is the last branch with Pascal (P4/P40); 19.x is the new LTS for T4 and newer:</span><br>
+<select id="nvidia_series_pick" style="margin:6px 4px 0 0">
+  <option value="16">16.x LTS - 535.309.01 (incl. Pascal P4/P40/P100, V100)</option>
+  <option value="19">19.x LTS - 580.178.05 (T4/A40/L40/RTX Ada/Blackwell, no Pascal)</option>
+</select>
+<input type="button" value="Install Selected Series" onclick="installNvidia(document.getElementById('nvidia_series_pick').value)">
+<?php elseif ($series_caps === '16'): ?>
+<br><span style="opacity:.8"><i class="fa fa-microchip"></i> Detected:
+<?= htmlspecialchars(implode('; ', array_map(fn($p) => htmlspecialchars($gpus[$p])." ({$gpu_ids[$p]})", array_keys($gpus)))) ?> -
+only supported by <b>16.x</b> (Pascal was dropped from branch 17 on):</span><br>
+<input type="button" value="Install 16.x (535.309.01)" onclick="installNvidia('16')" style="margin:6px 0 0 0">
+<?php elseif ($series_caps === '19'): ?>
+<br><span style="opacity:.8"><i class="fa fa-microchip"></i> Detected:
+<?= htmlspecialchars(implode('; ', array_map(fn($p) => htmlspecialchars($gpus[$p])." ({$gpu_ids[$p]})", array_keys($gpus)))) ?> -
+supported by <b>16.x and 19.x</b>. The 19.x series is the current LTS:</span><br>
+<select id="nvidia_series_pick" style="margin:6px 4px 0 0">
+  <option value="19">19.x LTS - 580.178.05 (recommended)</option>
+  <option value="16">16.x LTS - 535.309.01</option>
+</select>
+<input type="button" value="Install Selected Series" onclick="installNvidia(document.getElementById('nvidia_series_pick').value)">
+<?php else: ?>
+<br><span style="opacity:.8"><i class="fa fa-microchip"></i> No GPU from the vGPU support lists detected
+<?= $anyGpu ? "(consumer GeForce cards need the unlock option - the unlock kernel patch is only built into the 16.x series)" : "(no NVIDIA GPU found - the package will activate once the GPU is present)" ?>.
+</span><br>
+<input type="button" value="Install 16.x (535.309.01)" onclick="installNvidia('16')" style="margin:6px 0 0 0">
+<?php endif; ?>
 </div>
 <?php else: ?>
 <div class="vgpu-banner msg"><i class="fa fa-check"></i>
-NVIDIA vGPU driver installed (<?= $installed_v ? "v".htmlspecialchars($installed_v) : "" ?>).
+NVIDIA vGPU driver installed (<?= $installed_v ? "v".htmlspecialchars($installed_v) : "" ?>,
+<?= $series_inst ? "series {$series_inst}.x" : "unknown series" ?>).
 <input type="button" value="Uninstall" onclick="uninstallNvidia()" style="margin-left:12px">
-<input type="button" value="Update Driver" onclick="updateDriver()" style="margin-left:8px">
+<input type="button" value="Update Driver" onclick="updateDriver('<?= $series_inst ?: $series_eff ?>')" style="margin-left:8px">
 </div>
 <?php endif; ?>
 </div>
@@ -524,6 +579,8 @@ and click <b>Restart vGPU Services</b> below.
     <td>Driver loaded:</td><td><?= $loaded_v ? "<span class='vgpu-ok'>v".htmlspecialchars($loaded_v)."</span>" : "<span class='vgpu-bad'>not loaded</span>" ?></td></tr>
 <tr><td>nvidia-vgpu-mgr:</td><td><?= $mgr_running ? "<span class='vgpu-ok'>running</span>" : "<span class='vgpu-bad'>stopped</span>" ?></td>
     <td>mdev types:</td><td><?= $types_present ? "<span class='vgpu-ok'>available</span>" : "<span class='vgpu-bad'>not available</span>" ?></td></tr>
+<tr><td>Driver series:</td><td colspan="3"><?= $series_inst ? "<span class='vgpu-ok'>{$series_inst}.x (installed)</span>" : "<span class='vgpu-bad'>none</span>" ?>
+    - hardware supports: <b><?= htmlspecialchars($series_caps) ?></b>, default: <?= htmlspecialchars($series_eff) ?>.x (change in License &amp; Modules)</td></tr>
 <tr><td>License server:</td><td colspan="3"><?= $lsrv ? "<span class='vgpu-mono'>".htmlspecialchars($lsrv.":".$lport)."</span> (FeatureType=".htmlspecialchars($lfeat).")" : "<span class='vgpu-warn'>not set - vGPU will not license</span>" ?></td></tr>
 <tr><td>Host docker GPU:</td><td colspan="3"><?php
   $dk = @file_get_contents('/etc/docker/daemon.json');
@@ -539,7 +596,7 @@ and click <b>Restart vGPU Services</b> below.
 </table>
 <div style="margin-top:10px">
   <input type="button" value="Restart vGPU Services" onclick="restartServices()">
-  <input type="button" value="Update Driver" onclick="updateDriver()">
+  <input type="button" value="Update Driver" onclick="updateDriver('<?= $series_inst ?: $series_eff ?>')">
   <span style="opacity:.7">&nbsp;Restart reloads the nvidia driver to rebuild the profile list. Stop any VM using a vGPU first.</span>
 </div>
 </div>
@@ -560,6 +617,14 @@ and click <b>Restart vGPU Services</b> below.
     <option value="2" <?= $lfeat=="2" ? "selected" : "" ?>>2 - NVIDIA RTX Virtual Workstation (vDWS, Q-series)</option>
   </select>
   <span style="opacity:.7">&nbsp;(P4: Q-series = 2, B-series = 0)</span>
+</td></tr>
+<tr><td>Driver series (16.x / 19.x):</td><td>
+  <select name="driver_series">
+    <option value="auto" <?= $series_sel=="auto" ? "selected" : "" ?>>Auto - detect from the installed GPU</option>
+    <option value="16" <?= $series_sel=="16" ? "selected" : "" ?>>16.x - 535.x (Pascal era, P4/P40/P100/V100)</option>
+    <option value="19" <?= $series_sel=="19" ? "selected" : "" ?>>19.x - 580.x (T4 and newer, current LTS)</option>
+  </select>
+  <span style="opacity:.7">&nbsp;used by the next driver install / update (both series cannot load side by side)</span>
 </td></tr>
 <tr><td>vGPU unlock (spoof consumer GPU):</td><td>
   <select name="unlock">

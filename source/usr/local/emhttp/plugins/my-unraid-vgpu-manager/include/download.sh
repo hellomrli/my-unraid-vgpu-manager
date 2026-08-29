@@ -25,8 +25,36 @@ SRC="${1:-nvidia}"
 [ "${SRC}" = "i915" ] || SRC="nvidia"
 shift 2>/dev/null || true
 
+# nvidia: optional series (16|19) BEFORE the version - the driver repo
+# releases carry both branches side by side (nvidia-535.* and nvidia-580.*).
+SERIES=""
+if [ $# -ge 1 ]; then
+  case "$1" in
+    16|19) SERIES="$1"; shift ;;
+  esac
+fi
+
 WANT="${1:-$(grep -m1 '^driver_version=' "${SETTINGS}" 2>/dev/null | cut -d '=' -f2)}"
 [ -n "${WANT}" ] || WANT="latest"
+
+# nvidia series -> asset glob. "auto"/unset follows the installed driver,
+# defaulting to 16.x when no driver is installed (version prefix).
+if [ "${SRC}" = "nvidia" ]; then
+  if [ -z "${SERIES}" ] || [ "${SERIES}" = "auto" ]; then
+    inst="$(modinfo -F version nvidia 2>/dev/null | head -1)"
+    case "${inst}" in
+      580.*) SERIES="19" ;;
+      *)     SERIES="16" ;;
+    esac
+  fi
+  case "${SERIES}" in
+    19) NVGLOB="nvidia-580." ;;
+    *)  NVGLOB="nvidia-535." ;;
+  esac
+  CLEAN_GLOB="${NVGLOB}"
+else
+  CLEAN_GLOB="i915-"
+fi
 
 mkdir -p "${PKGDIR}"
 
@@ -35,14 +63,14 @@ md5_ok() {
   [ "$(md5sum "${1}" | awk '{print $1}')" = "$(awk '{print $1}' "${1}.md5")" ]
 }
 
-# nvidia: packages named nvidia-<ver>-<kernel>-Unraid-1.txz, Release tag = kernel
+# nvidia: packages named nvidia-<ver>-<kernel>-Unraid-<b>.txz, Release tag = kernel
 nvidia_source() {
   DL_URL="https://github.com/${NVIDIA_REPO}/releases/download/${KERNEL_V}"
   API_URL="https://api.github.com/repos/${NVIDIA_REPO}/releases/tags/${KERNEL_V}"
-  PATTERN='^nvidia-'
-  # cleanup prefix: never touch packages of the other driver type sharing this dir
-  PREFIX="nvidia-"
-  LOCAL_PKG="$(ls "${PKGDIR}"/nvidia-*.txz 2>/dev/null | sort -V | tail -1)"
+  PATTERN="^${NVGLOB}"
+  # cleanup glob scoped to the series so both series' packages can coexist
+  PREFIX="${NVGLOB}"
+  LOCAL_PKG="$(ls "${PKGDIR}"/${NVGLOB}*.txz 2>/dev/null | sort -V | tail -1)"
 }
 
 # i915: packages named i915-sriov-<ver>-<kernel>-Unraid-<b>.txz.

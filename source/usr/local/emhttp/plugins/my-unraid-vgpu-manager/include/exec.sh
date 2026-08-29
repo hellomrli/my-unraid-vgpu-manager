@@ -7,31 +7,57 @@ SETTINGS="${PLGCFG}/settings.cfg"
 EMHTTP="/usr/local/emhttp/plugins/${PLUGIN}"
 RC="${EMHTTP}/scripts/rc.vgpu"
 KERNEL_V="$(uname -r)"
-VERSIONS_CACHE="/tmp/vgpu_driver"
+VERSIONS_CACHE_BASE="/tmp/vgpu_driver"
 CRON_LINE="${EMHTTP}/include/update-check.sh"
 
-# refresh the cache of driver versions available for this kernel (throttled to 5 min)
+# asset-name glob per driver series (the release carries both side by side)
+nvidia_glob_for() {
+  case "${1}" in
+    19) echo "580." ;;
+    *)  echo "535." ;;
+  esac
+}
+
+versions_cache_for() {
+  echo "${VERSIONS_CACHE_BASE}_$(nvidia_glob_for "$1" | tr -d '.')"
+}
+
+set_setting() {
+  if grep -q "^${1}=" "${SETTINGS}" 2>/dev/null; then
+    sed -i "s|^${1}=.*|${1}=${2}|" "${SETTINGS}"
+  else
+    echo "${1}=${2}" >> "${SETTINGS}"
+  fi
+}
+
+# refresh the cache of driver versions available for this kernel + series
+# (throttled to 5 min)
 update() {
-  if [ -f "${VERSIONS_CACHE}" ]; then
-    local age=$(( $(date +%s) - $(stat -c %Y "${VERSIONS_CACHE}") ))
+  local series="${1:-16}"
+  local cache; cache="$(versions_cache_for "${series}")"
+  if [ -f "${cache}" ]; then
+    local age=$(( $(date +%s) - $(stat -c %Y "${cache}") ))
     [ ${age} -lt 300 ] && return 0
   fi
-  # asset names: nvidia-<driver version>-<kernel>-Unraid-1.txz -> field 2 is the version
+  local glob; glob="$(nvidia_glob_for "${series}")"
+  # asset names: nvidia-<driver version>-<kernel>-Unraid-<b>.txz
   wget -T 15 -qO- "https://api.github.com/repos/hellomrli/my-nvidia-vgpu-driver/releases/tags/${KERNEL_V}" 2>/dev/null \
     | jq -r '.assets[].name' 2>/dev/null \
-    | grep '^nvidia-' | grep -E -v '\.md5$' \
-    | cut -d '-' -f2 | sort -V | uniq | tail -10 > "${VERSIONS_CACHE}"
-  if [ ! -s "${VERSIONS_CACHE}" ]; then
-    modinfo -F version nvidia 2>/dev/null | head -1 > "${VERSIONS_CACHE}"
+    | grep -F "nvidia-${glob}" | grep -E -v '\.md5$' \
+    | cut -d '-' -f2 | sort -V | uniq | tail -10 > "${cache}"
+  if [ ! -s "${cache}" ]; then
+    modinfo -F version nvidia 2>/dev/null | head -1 > "${cache}"
   fi
 }
 
 get_latest_version() {
-  echo -n "$(tail -1 "${VERSIONS_CACHE}" 2>/dev/null)"
+  local series="${1:-16}"
+  echo -n "$(tail -1 "$(versions_cache_for "${series}")" 2>/dev/null)"
 }
 
 get_available_versions() {
-  cat "${VERSIONS_CACHE}" 2>/dev/null
+  local series="${1:-16}"
+  cat "$(versions_cache_for "${series}")" 2>/dev/null
 }
 
 get_installed_version() {
@@ -44,9 +70,10 @@ get_selected_version() {
 
 # download (if needed) and live-install a driver version; runs inside an openBox window
 update_driver() {
-  local want="${1:-latest}"
+  local series="${1:-16}" want="${2:-latest}"
   sed -i "/^driver_version=/c\driver_version=${want}" "${SETTINGS}" 2>/dev/null
-  if "${EMHTTP}/include/download.sh" nvidia "${want}"; then
+  set_setting nvidia_series "${series}"
+  if "${EMHTTP}/include/download.sh" nvidia "${series}" "${want}"; then
     echo
     "${RC}" update
   else
@@ -81,8 +108,10 @@ change_update_check() {
 # --- on-demand driver install / uninstall (page buttons) ---
 
 install_nvidia() {
-  echo "-----------------------Installing NVIDIA vGPU driver...------------------------"
-  "${EMHTTP}/include/download.sh" nvidia latest || true
+  local series="${1:-16}"
+  set_setting nvidia_series "${series}"
+  echo "-----------------------Installing NVIDIA vGPU driver (series ${series})...-----------------------"
+  "${EMHTTP}/include/download.sh" nvidia "${series}" latest || true
   "${RC}" nvidia_install
   echo
   "${RC}" status

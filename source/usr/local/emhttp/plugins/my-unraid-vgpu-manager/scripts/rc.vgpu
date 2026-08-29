@@ -44,6 +44,12 @@ KERNEL_V="$(uname -r)"
 PKGDIR="${PLGCFG}/packages/${KERNEL_V%%-*}"
 TYPES_TIMEOUT=60
 
+# vGPU-capable device ids, extracted from each branch's vgpuConfig.xml:
+#   16.x (535.309.01, LTS): Maxwell/Pascal/Volta/Turing-GL/Ampere/Ada ...
+#   19.x (580.178.05, LTS): same minus Pascal (P4/P40/P100/P6), plus Blackwell
+VGPU16_IDS="0x13bd 0x13f2 0x13f3 0x15f7 0x15f8 0x15f9 0x1b38 0x1bb3 0x1bb4 0x1db1 0x1db3 0x1db4 0x1db5 0x1db6 0x1df6 0x1e30 0x1e78 0x1eb8 0x2230 0x2231 0x2233 0x2235 0x2236 0x2238 0x25b6 0x26b1 0x26b2 0x26b5 0x26b9 0x26ba 0x27b6 0x27b8"
+VGPU19_IDS="0x13bd 0x1db1 0x1db3 0x1db4 0x1db5 0x1db6 0x1df6 0x1e30 0x1e78 0x1eb8 0x2230 0x2231 0x2233 0x2235 0x2236 0x2238 0x25b6 0x26b1 0x26b2 0x26b3 0x26b5 0x26b9 0x26ba 0x27b6 0x27b8 0x2bb5 0x2bb9 0x2c3a"
+
 log() {
   logger -t "${PLUGIN}" -- "$*"
   echo "$*"
@@ -67,7 +73,9 @@ set_setting() {
 }
 
 pkg_file() {
-  ls "${PKGDIR}"/nvidia-*.txz 2>/dev/null | sort -V | tail -1
+  local glob
+  glob="$(nvidia_series_glob)"
+  ls "${PKGDIR}"/nvidia-${glob}*.txz 2>/dev/null | sort -V | tail -1
 }
 
 i915_pkg_file() {
@@ -101,6 +109,56 @@ i915_installed_version() {
 
 types_present() {
   ls -d /sys/bus/pci/devices/*/mdev_supported_types/nvidia-* >/dev/null 2>&1
+}
+
+# device ids of all NVIDIA GPUs (display/3d class) present on the host
+nvidia_gpu_ids() {
+  local d
+  for d in /sys/bus/pci/devices/*; do
+    [ -r "$d/vendor" ] && [ -r "$d/device" ] && [ -r "$d/class" ] || continue
+    [ "$(cat "$d/vendor" 2>/dev/null)" = "0x10de" ] || continue
+    case "$(cat "$d/class" 2>/dev/null)" in
+      0x03*) cat "$d/device" ;;
+    esac
+  done | sort -u
+}
+
+# which vGPU driver series the installed hardware supports:
+#   both | 16 | 19 | none (unknown/consumer GPU - manual choice, unlock)
+nvidia_series_caps() {
+  local all16=1 all19=1 found=0 id
+  while read -r id; do
+    [ -z "$id" ] && continue
+    found=1
+    case " ${VGPU16_IDS} " in *" ${id} "*) ;; *) all16=0 ;; esac
+    case " ${VGPU19_IDS} " in *" ${id} "*) ;; *) all19=0 ;; esac
+  done < <(nvidia_gpu_ids)
+  [ "$found" = "1" ] || { echo none; return; }
+  if [ "$all16" = "1" ] && [ "$all19" = "1" ]; then echo both
+  elif [ "$all16" = "1" ]; then echo 16
+  elif [ "$all19" = "1" ]; then echo 19
+  else echo none; fi
+}
+
+# the driver series to operate on: settings nvidia_series (16/19/auto);
+# "auto" resolves via hardware detection (both -> 16, the project default)
+nvidia_series() {
+  local s caps
+  s="$(setting nvidia_series)"
+  case "$s" in 16|19) echo "$s"; return ;; esac
+  caps="$(nvidia_series_caps)"
+  case "$caps" in
+    19) echo 19 ;;
+    *)  echo 16 ;;
+  esac
+}
+
+# package-name glob per series: 16.x == nvidia-535.*, 19.x == nvidia-580.*
+nvidia_series_glob() {
+  case "$(nvidia_series)" in
+    19) echo "580." ;;
+    *)  echo "535." ;;
+  esac
 }
 
 # ============================================================================
