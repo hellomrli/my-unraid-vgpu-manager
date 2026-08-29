@@ -2,11 +2,11 @@
 <!DOCTYPE PLUGIN [
   <!ENTITY name      "my-unraid-vgpu-manager">
   <!ENTITY author    "hellomrli">
-  <!ENTITY version   "2026.08.21h">
+  <!ENTITY version   "2026.08.29">
   <!ENTITY launch    "Settings/my-unraid-vgpu-manager">
   <!ENTITY gitURL    "https://github.com/&author;/&name;/raw/master">
   <!ENTITY pluginURL "&gitURL;/&name;.plg">
-  <!ENTITY md5       "62440d0b47198f2b13447c91559c0e49">
+  <!ENTITY md5       "732a60e29662d70c8e6a1f5ebf82ab92">
   <!ENTITY plugin    "/boot/config/plugins/&name;">
   <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
   <!ENTITY packages  "/boot/config/plugins/&name;/packages">
@@ -15,6 +15,32 @@
 <PLUGIN  name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" min="6.11.5" support="https://github.com/&author;/&name;">
 
 <CHANGES>
+##2026.08.29
+- FIX: driver package cleanup no longer deletes the other driver type's
+  package (nvidia and i915 share the packages/&lt;kernel&gt;/ directory) -
+  installing Intel used to wipe the downloaded NVIDIA package, and the other
+  way around.
+- FIX: the i915 update check parsed the version out of "i915-sriov-&lt;ver&gt;-..."
+  with cut -f2 (got "sriov" on both sides), so it never notified - now parsed
+  with sed.
+- FIX: the docker nvidia runtime is merged into an existing
+  /etc/docker/daemon.json via jq instead of overwriting the user's config
+  (registry-mirrors etc. survive). The driver package itself no longer ships
+  a daemon.json - Unraid regenerates that file at docker service start, and
+  nvidia-ctk configures the runtime at install/boot (clean driver builds:
+  nvidia-...-6.18.47-Unraid-2 and -6.18.44-Unraid-3).
+- FIX: nvidia-gridd now restarts when the license port/FeatureType/UI change,
+  not only when the server address changes.
+- FIX: VF passthrough binding loads vfio-pci first and binds via
+  vfio-pci/bind; drivers_probe would probe every driverless PCI device.
+- FIX: a stale /boot/config/modprobe.d/nvidia.conf with the invalid
+  "cudahost=1" option (left by the old vgpu-driver plugin) is removed.
+- FIX: Drivers tab VFs display showed n/a whenever sriov_totalvfs was set
+  (duplicated condition in the template).
+- (driver repo) the build now pins SHA256 of the NVIDIA .run files and the
+  kernel archive, verifies the committed tools via SHA256SUMS, and skips
+  dangling soname links.
+
 ##2026.08.21h
 - ADD: "Attach vGPU to VM" section. Bind a vGPU mdev to a libvirt VM's
   persistent config via virsh (attach/detach), so the vGPU appears as a

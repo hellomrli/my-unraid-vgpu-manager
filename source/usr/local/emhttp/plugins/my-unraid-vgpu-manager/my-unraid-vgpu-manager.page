@@ -435,7 +435,7 @@ tr.vgpu-soldout {opacity: .45; cursor: not-allowed;}
 <tr><td>Intel i915:</td><td><?= $intel_inst ? "<span class='vgpu-ok'>installed</span>" : "<span class='vgpu-bad'>not installed</span>" ?></td>
     <td>i915 module:</td><td><?= $i915_inst ? "<span class='vgpu-ok'>".htmlspecialchars($i915_inst)."</span>" : "<span class='vgpu-bad'>not loaded</span>" ?></td></tr>
 <tr><td>Intel GPU (PF):</td><td><?= $intel_pf ? "<span class='vgpu-mono'>".htmlspecialchars($intel_pf)."</span>" : "<span class='vgpu-bad'>none detected</span>" ?></td>
-    <td>VFs:</td><td><?= ($intel_total !== '' && $intel_total !== '') ? "<span class='vgpu-mono'>".htmlspecialchars($intel_vfs)." / ".htmlspecialchars($intel_total)."</span>" : "n/a" ?></td></tr>
+    <td>VFs:</td><td><?= ($intel_vfs !== '' && $intel_total !== '') ? "<span class='vgpu-mono'>".htmlspecialchars($intel_vfs)." / ".htmlspecialchars($intel_total)."</span>" : "n/a" ?></td></tr>
 </table>
 <p style="opacity:.8; margin-top:8px"><i class="fa fa-info-circle"></i>
 Drivers are installed <b>on demand</b> from this page - installing this plugin does not change

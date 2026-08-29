@@ -84,7 +84,7 @@ pkg_version() {
 i915_pkg_version() {
   local p
   p="$(i915_pkg_file)"
-  [ -n "$p" ] && basename "$p" | sed 's/^i915-sriov-\([0-9]*\)-.*/\1/'
+  [ -n "$p" ] && basename "$p" | sed -E 's/^i915-sriov-([0-9.]+)-.*/\1/'
 }
 
 installed_version() {
@@ -117,6 +117,12 @@ nvidia_setup_config() {
   [ -n "${unlock}" ] || unlock="$(setting unlock)"
   [ "${unlock}" = "true" ] || unlock="false"
   echo "unlock = ${unlock}" > "${UNLOCK_DIR}/config.toml"
+  # drop the stale modprobe option file written by the old vgpu-driver plugin
+  # (cudahost=1 is unknown to this driver and silently ignored)
+  if [ -f /boot/config/modprobe.d/nvidia.conf ] && grep -q cudahost /boot/config/modprobe.d/nvidia.conf 2>/dev/null; then
+    rm -f /boot/config/modprobe.d/nvidia.conf
+    log "Removed stale /boot/config/modprobe.d/nvidia.conf (invalid cudahost option)"
+  fi
   if [ -f "${XML_OVERRIDE}" ] && [ -d "$(dirname "${XML_TARGET}")" ]; then
     if ! cmp -s "${XML_OVERRIDE}" "${XML_TARGET}"; then
       log "Applying custom vgpuConfig.xml from ${XML_OVERRIDE}"
@@ -142,8 +148,12 @@ nvidia_apply_license() {
   [ -n "${feat}" ] || feat="0"
   [ "${ui}" = "true" ] && ui="TRUE" || ui="FALSE"
 
-  if [ ! -f "${conf}" ] || ! grep -q "^ServerAddress=" "${conf}" 2>/dev/null \
-     || [ "$(grep '^ServerAddress=' "${conf}" | cut -d= -f2)" != "${addr}" ]; then
+  # any field change (address/port/feature/UI) must restart gridd to take effect
+  if [ ! -f "${conf}" ] \
+     || [ "$(grep -m1 '^ServerAddress=' "${conf}" 2>/dev/null | cut -d= -f2)" != "${addr}" ] \
+     || [ "$(grep -m1 '^ServerPort=' "${conf}" 2>/dev/null | cut -d= -f2)" != "${port}" ] \
+     || [ "$(grep -m1 '^FeatureType=' "${conf}" 2>/dev/null | cut -d= -f2)" != "${feat}" ] \
+     || [ "$(grep -m1 '^EnableUI=' "${conf}" 2>/dev/null | cut -d= -f2)" != "${ui}" ]; then
     changed=1
   fi
 
@@ -422,7 +432,24 @@ nvidia_setup_docker() {
       && log "Docker nvidia runtime configured" \
       || log "WARNING: nvidia-ctk runtime configure failed"
   fi
+  # merge the nvidia runtime into an existing daemon.json - NEVER overwrite the
+  # whole file (it may hold the user's registry-mirrors, data-root, ...)
   if [ -f /etc/docker/daemon.json ] && ! grep -q '"nvidia"' /etc/docker/daemon.json 2>/dev/null; then
+    if command -v jq >/dev/null 2>&1; then
+      local tmp
+      tmp="$(mktemp)"
+      if jq '.runtimes = ((.runtimes // {}) + {nvidia: {path: "nvidia-container-runtime", runtimeArgs: []}})' \
+           /etc/docker/daemon.json > "${tmp}" 2>/dev/null; then
+        mv "${tmp}" /etc/docker/daemon.json
+        log "Merged nvidia runtime into /etc/docker/daemon.json"
+      else
+        rm -f "${tmp}"
+        log "WARNING: could not merge nvidia runtime into /etc/docker/daemon.json (invalid JSON?)"
+      fi
+    else
+      log "WARNING: /etc/docker/daemon.json has no nvidia runtime and jq is missing - please merge it manually"
+    fi
+  elif [ ! -f /etc/docker/daemon.json ]; then
     cat > /etc/docker/daemon.json <<'EOF'
 {
     "runtimes": {
@@ -567,7 +594,7 @@ intel_set_vfs() {
   return 0
 }
 
-# bind one PCI device to vfio-pci (like giganode's bind_vfio)
+# bind one PCI device to vfio-pci
 intel_bind_vfio() {
   local pci="$1" dsp dpath dbdf curr
   dsp="/sys/devices/pci${pci%:*}/${pci}"
@@ -575,6 +602,10 @@ intel_bind_vfio() {
   dpath="${dsp}/driver"
   dbdf="${dsp##*/}"
 
+  # vfio-pci must be loaded before anything can bind to it
+  if ! lsmod | grep -qw vfio_pci; then
+    modprobe vfio_pci 2>/dev/null || { log "ERROR: cannot load vfio-pci"; return 1; }
+  fi
   echo "vfio-pci" > "${dsp}/driver_override" 2>/dev/null
   if [ -d "${dpath}" ]; then
     curr="$(readlink "${dpath}")"
@@ -586,8 +617,14 @@ intel_bind_vfio() {
     log "Unbinding ${dbdf} from ${curr}"
     echo "${dbdf}" > "${dpath}/unbind" 2>/dev/null
   fi
-  echo "${dbdf}" > /sys/bus/pci/drivers_probe 2>/dev/null
-  log "${dbdf} bound to vfio-pci"
+  # bind explicitly instead of drivers_probe (which would probe every
+  # driverless PCI device on the bus as a side effect)
+  if echo "${dbdf}" > /sys/bus/pci/drivers/vfio-pci/bind 2>/dev/null; then
+    log "${dbdf} bound to vfio-pci"
+  else
+    log "WARNING: could not bind ${dbdf} to vfio-pci"
+    return 1
+  fi
 }
 
 intel_bind_all_vfio() {

@@ -16,6 +16,12 @@ notify() {
 SET_DRV_V="$(grep -m1 '^driver_version=' "${SETTINGS}" 2>/dev/null | cut -d '=' -f2)"
 [ "${SET_DRV_V}" = "latest" ] || exit 0
 
+# version part of an asset/package name like nvidia-535.309.01-... or
+# i915-sriov-20260812.1-... (the prefix varies in length, so cut -d- is wrong)
+ver_of() {
+  printf '%s' "$1" | sed -E "s/^${2}-([0-9.]+)-.*/\1/"
+}
+
 # check one driver repo; only notify when that driver is actually installed
 check_repo() {
   local repo="$1" prefix="$2" installed="$3"
@@ -24,7 +30,8 @@ check_repo() {
   latest="$(wget -T 15 -qO- "https://api.github.com/repos/${repo}/releases/tags/${KERNEL_V}" 2>/dev/null \
     | jq -r '.assets[].name' 2>/dev/null \
     | grep "^${prefix}-" | grep -E -v '\.md5$' \
-    | cut -d '-' -f2 | sort -V | uniq | tail -1)"
+    | sed -E "s/^${prefix}-([0-9.]+)-.*/\1/" \
+    | sort -V | uniq | tail -1)"
   if [ -n "${latest}" ] && [ "${latest}" != "${installed}" ]; then
     notify "New ${prefix} driver v${latest} available (installed: ${installed}). Open Settings -> Unraid vGPU Manager and click Install to download and install it."
   fi
@@ -33,4 +40,4 @@ check_repo() {
 # installed version: nvidia from modinfo, i915 from the installed package name
 I915_PKG="$(ls "${PLGCFG}/packages/${KERNEL_V%%-*}/"i915-sriov-*.txz 2>/dev/null | head -1)"
 check_repo "hellomrli/my-nvidia-vgpu-driver" "nvidia"     "$(modinfo -F version nvidia 2>/dev/null | head -1)"
-check_repo "hellomrli/my-i915-sriov-driver"  "i915-sriov" "$(basename "${I915_PKG}" 2>/dev/null | cut -d '-' -f2)"
+check_repo "hellomrli/my-i915-sriov-driver"  "i915-sriov" "$(ver_of "$(basename "${I915_PKG}" 2>/dev/null)" "i915-sriov")"

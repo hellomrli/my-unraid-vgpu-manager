@@ -40,6 +40,8 @@ nvidia_source() {
   DL_URL="https://github.com/${NVIDIA_REPO}/releases/download/${KERNEL_V}"
   API_URL="https://api.github.com/repos/${NVIDIA_REPO}/releases/tags/${KERNEL_V}"
   PATTERN='^nvidia-'
+  # cleanup prefix: never touch packages of the other driver type sharing this dir
+  PREFIX="nvidia-"
   LOCAL_PKG="$(ls "${PKGDIR}"/nvidia-*.txz 2>/dev/null | sort -V | tail -1)"
 }
 
@@ -59,6 +61,7 @@ i915_source() {
     API_URL="https://api.github.com/repos/${I915_REPO}/releases/tags/${I915_TAG}"
   fi
   LOCAL_PKG="$(ls "${PKGDIR}"/i915-*.txz 2>/dev/null | sort -V | tail -1)"
+  PREFIX="i915-"
 }
 
 case "${SRC}" in
@@ -103,7 +106,7 @@ fi
 if [ "${WANT}" = "latest" ]; then
   PKG="$(echo "${AVAIL}" | tail -1)"
 else
-  PKG="$(echo "${AVAIL}" | grep -- "-${WANT}-" | sort -V | tail -1)"
+  PKG="$(echo "${AVAIL}" | grep -F -- "-${WANT}-" | sort -V | tail -1)"
   if [ -z "${PKG}" ]; then
     echo "---Requested driver v${WANT} not found for this kernel, falling back to latest---"
     PKG="$(echo "${AVAIL}" | tail -1)"
@@ -140,11 +143,15 @@ else
   fi
 fi
 
-# remove packages for other kernels and older builds for this kernel
+# remove packages for other kernels and older builds of THIS driver type.
+# Both drivers (nvidia + i915) share the packages/<kernel>/ directory, so the
+# cleanup must be scoped to the current PREFIX - deleting the other driver's
+# package would break its later install/update.
 for d in "${PLGCFG}/packages/"*/; do
-  [ "${d}" = "${PKGDIR}/" ] || rm -rf "${d}"
+  [ "${d}" = "${PKGDIR}/" ] || rm -f "${d}"/${PREFIX}*.txz "${d}"/${PREFIX}*.md5 2>/dev/null
 done
-for f in "${PKGDIR}"/*; do
+for f in "${PKGDIR}"/${PREFIX}*; do
+  [ -e "${f}" ] || continue
   case "$(basename "${f}")" in
     "${PKG}"|"${PKG}.md5") ;;
     *) rm -f "${f}" ;;
