@@ -120,6 +120,11 @@ class Sandbox:
             extra=['--ro-bind','/tmp/vgpu-review-tools','/tmp/vgpu-review-tools']
         elif Path('/etc/php').is_dir():
             extra=['--ro-bind','/etc/php','/etc/php']
+        # Unraid uses GNU coreutils. Hosts that default to uutils may provide
+        # the GNU timeout separately; retain Unraid's process-group behavior.
+        gnu_timeout=shutil.which('gnutimeout')
+        if gnu_timeout:
+            extra+=['--ro-bind',str(Path(gnu_timeout).resolve()),'/usr/bin/timeout']
         php_link=self.root/'bin/php'
         if not php_link.exists(): php_link.symlink_to(Path(php).resolve())
         return ['bwrap','--die-with-parent','--unshare-user','--unshare-pid','--unshare-ipc','--unshare-uts']+([] if network else ['--unshare-net'])+[
@@ -130,8 +135,8 @@ class Sandbox:
             '--dev','/dev','--proc','/proc','--chdir','/tmp/fixture',
             '--setenv','PATH','/tmp/fixture/bin:'+str(Path(php).parent)+':/usr/bin:/bin',
             '--setenv','LC_ALL','C',*command]
-    def run(self, *command, check=False):
-        result=subprocess.run(self.argv(list(command)),text=True,capture_output=True,timeout=35)
+    def run(self, *command, check=False, timeout=35):
+        result=subprocess.run(self.argv(list(command)),text=True,capture_output=True,timeout=timeout)
         if check and result.returncode: raise AssertionError(result.stdout+result.stderr)
         return result
     def rc(self, *args): return self.run('/bin/bash',BASE+'/scripts/rc.vgpu',*args)

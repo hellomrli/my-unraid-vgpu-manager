@@ -101,20 +101,47 @@
   async function checkUpdates(refresh) {
     const form = document.getElementById('vgpu-update-form');
     if (!form || checkingUpdates) return;
-    checkingUpdates = true;
     const button = form.querySelector('button[type="submit"]');
     const status = document.getElementById('update-check-message');
-    button.disabled = true;
-    status.textContent = text('Checking for driver updates…');
-    const data = new FormData(form);
-    data.set('refresh', refresh ? 'true' : 'false');
+    if (!button || !status) return;
+    checkingUpdates = true;
+    let timer;
+    let timedOut = false;
+    let failure = text('Could not check driver updates. Try again.');
     try {
-      const response = await fetch(form.action, {method: 'POST', body: data, credentials: 'same-origin'});
-      const result = await response.json();
-      if (!response.ok || !result.ok || !result.updates?.drivers) throw new Error('Invalid update status');
-      for (const source of ['nvidia', 'i915']) {
+      button.disabled = true;
+      status.textContent = text('Checking for driver updates…');
+      const data = new FormData(form);
+      data.set('refresh', refresh ? 'true' : 'false');
+      const controller = new AbortController();
+      // Cover both the request and response body. The backend has a shorter
+      // deadline; this also recovers from a blocked web server or connection.
+      const deadline = new Promise((_, reject) => {
+        timer = setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+          reject(new Error('Update check timed out'));
+        }, 35000);
+      });
+      const request = (async () => {
+        const response = await fetch(form.action, {method: 'POST', body: data, credentials: 'same-origin', signal: controller.signal});
+        const result = response.status === 403
+          ? {ok: false, message: text('The page token expired. Refresh the page and try again.')}
+          : await response.json();
+        return {response, result};
+      })();
+      const {response, result} = await Promise.race([request, deadline]);
+      if (!response.ok || result?.ok !== true) {
+        if (typeof result?.message === 'string') failure = result.message;
+        throw new Error('Update check failed');
+      }
+      if (!result.updates?.drivers) throw new Error('Invalid update status');
+      const drivers = ['nvidia', 'i915'].map(source => {
         const driver = result.updates.drivers[source];
         if (!driver || typeof driver.message !== 'string') throw new Error('Invalid driver status');
+        return [source, driver];
+      });
+      for (const [source, driver] of drivers) {
         root.querySelectorAll('[data-update-row="' + source + '"]').forEach(row => {
           row.hidden = driver.status === 'disabled';
           const label = row.querySelector('[data-update-message]');
@@ -125,10 +152,16 @@
           update.dataset.series = driver.series;
         });
       }
-      status.textContent = '';
+      status.textContent = result.updates.busy ? text('Another driver update check is running. Try again shortly.') : '';
     } catch (_) {
-      status.textContent = text('Could not check driver updates. Try again.');
+      status.textContent = timedOut ? text('Driver update check timed out. Try again.') : failure;
+      root.querySelectorAll('[data-update-button]').forEach(update => { update.hidden = true; });
+      root.querySelectorAll('[data-update-message]').forEach(label => {
+        label.textContent = text('Update check failed. Try again.');
+        label.className = 'vgpu-muted';
+      });
     } finally {
+      clearTimeout(timer);
       button.disabled = false;
       checkingUpdates = false;
     }

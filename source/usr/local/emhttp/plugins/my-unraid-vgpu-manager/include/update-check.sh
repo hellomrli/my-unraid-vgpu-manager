@@ -42,7 +42,7 @@ if [ "$MODE" = check ]; then
 fi
 exec 7>"/var/lock/${PLUGIN}-updates.lock"
 if ! flock -n 7; then
-  [ "$MODE" = auto ] || printf '%s\n' "$CACHE"
+  [ "$MODE" = auto ] || jq -c '. + {busy:true}' <<< "$CACHE"
   exit 0
 fi
 
@@ -57,7 +57,9 @@ check_driver() {
   fi
   current="$(jq -r '.current' <<< "$item")"
   status=error; latest=''
-  if names="$(release_assets "$source" "$KERNEL_V" "$series")"; then
+  # Leave time for both enabled drivers within the web request's 30s deadline.
+  # curl diagnostics must not corrupt the JSON response or the other result.
+  if names="$(release_assets "$source" "$KERNEL_V" "$series" latest 12 2>/dev/null)"; then
     latest="$(printf '%s\n' "$names" | tail -1)"
     if [ -n "$latest" ]; then
       status=current

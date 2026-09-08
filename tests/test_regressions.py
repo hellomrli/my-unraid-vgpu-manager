@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """Behavioral regressions against an isolated, networkless Unraid simulation."""
+import fcntl
 import json
 from pathlib import Path
+import select
+import subprocess
+import time
 import unittest
 from sandbox import Sandbox, BASE, PLUGIN, KERNEL, NEXT_KERNEL, UUID
 
@@ -282,6 +286,23 @@ class Regressions(unittest.TestCase):
         result=self.box.shell(f"source {BASE}/include/common.sh; bilingual English 中文")
         self.assertEqual(result.stdout.strip(),'中文')
 
+    def test_standalone_language_does_not_wait_on_native_session_lock(self):
+        (self.box.root/'sessions').mkdir()
+        setup="ini_set('session.save_path','/tmp/fixture/sessions'); session_id('vgpu-test-session'); "
+        holder_code=setup+"session_start(); echo \"locked\\n\"; fflush(STDOUT); fgets(STDIN); session_write_close();"
+        holder=subprocess.Popen(self.box.argv(['php','-r',holder_code]),stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+        try:
+            self.assertTrue(select.select([holder.stdout],[],[],5)[0], 'Session holder did not start')
+            self.assertEqual(holder.stdout.readline(),'locked\n')
+            code=setup+"$_COOKIE[session_name()]='vgpu-test-session'; require '"+BASE+"/include/web.php'; echo $vgpu_language;"
+            for configured,expected in [('zh_CN','zh_CN'),('','en')]:
+                self.box.locale(configured)
+                result=self.box.run('php','-r',code,timeout=3)
+                self.assertOK(result); self.assertEqual(result.stdout,expected)
+        finally:
+            try: holder.communicate('\n',timeout=5)
+            except subprocess.TimeoutExpired: holder.kill(); holder.communicate()
+
     def test_upgrade_panel_only_appears_from_notification_for_staged_update(self):
         self.box.settings(nvidia_installed='true')
         self.box.package(kernel=NEXT_KERNEL,remote=True)
@@ -340,6 +361,58 @@ class Regressions(unittest.TestCase):
         self.box.state['offline']=True; self.box.write_state()
         result=self.action_json('check_updates',refresh='true')
         self.assertEqual(result['updates']['drivers']['nvidia']['status'],'error')
+
+    def test_metadata_timeout_keeps_the_other_drivers_update_result(self):
+        self.box.settings(nvidia_installed='true',intel_installed='true')
+        self.box.installed(self.box.package()); self.box.installed(self.box.package(source='i915'))
+        new_nv=self.box.package(build=2,remote=True)
+        new_intel=self.box.package(source='i915',build=2,remote=True)
+        self.box.state['metadata_delays']={'my-nvidia-vgpu-driver|'+KERNEL:30}; self.box.write_state()
+        started=time.monotonic()
+        result=self.action_json('check_updates',refresh='true')
+        self.assertLess(time.monotonic()-started,20)
+        self.assertTrue(result['ok'],result)
+        self.assertEqual(result['updates']['drivers']['nvidia']['status'],'error')
+        self.assertEqual(result['updates']['drivers']['i915']['latest'],new_intel)
+        self.box.state['metadata_delays']={}; self.box.write_state()
+        retry=self.action_json('check_updates',refresh='true')
+        self.assertEqual(retry['updates']['drivers']['nvidia']['latest'],new_nv)
+        self.assertFalse(self.box.events('upgradepkg'))
+        self.assertFalse(any('/releases/download/' in str(event) for event in self.box.events('curl')))
+
+    def test_update_deadline_kills_descendants_and_allows_retry(self):
+        self.box.settings(nvidia_installed='true')
+        self.box.installed(self.box.package()); latest=self.box.package(build=2,remote=True)
+        self.box.state['hang_metadata']=True; self.box.write_state()
+        # Retry in the same PHP process, before bubblewrap tears down children.
+        # A leaked descendant would keep either the output pipe or lock open.
+        code="""$_SERVER['REQUEST_METHOD']='POST'; $var=['csrf_token'=>'test-token'];
+$_POST=['vgpu_action'=>'check_updates','vgpu_token'=>'test-token','refresh'=>'true'];
+ob_start(); include '"""+BASE+"""/include/actions.php'; $first=json_decode(ob_get_clean(),true);
+$state=json_decode(file_get_contents('/tmp/fixture/state.json'),true); unset($state['hang_metadata']);
+file_put_contents('/tmp/fixture/state.json',json_encode($state));
+echo vgpu_json(['first'=>$first,'retry'=>vgpu_driver_updates('refresh')]);"""
+        started=time.monotonic()
+        response=self.box.run('php','-r',code,timeout=40); self.assertOK(response)
+        self.assertLess(time.monotonic()-started,38)
+        result=json.loads(response.stdout)
+        self.assertFalse(result['first']['ok']); self.assertIn('超时',result['first']['message'])
+        self.assertEqual(result['retry']['drivers']['nvidia']['latest'],latest)
+        self.assertFalse(result['retry'].get('busy'))
+        self.assertFalse(self.box.events('upgradepkg'))
+
+    def test_update_check_reports_busy_without_waiting_or_querying_again(self):
+        self.box.settings(nvidia_installed='true')
+        self.box.installed(self.box.package()); self.box.package(build=2,remote=True)
+        self.assertTrue(self.action_json('check_updates',refresh='true')['ok'])
+        calls=len(self.box.events('curl'))
+        with (self.box.root/'var/lock'/f'{PLUGIN}-updates.lock').open('a') as lock:
+            fcntl.flock(lock,fcntl.LOCK_EX)
+            result=self.action_json('check_updates',refresh='true')
+        self.assertTrue(result['ok']); self.assertTrue(result['updates']['busy'])
+        self.assertEqual(len(self.box.events('curl')),calls)
+        cached=json.loads(self.box.helper('update-check.sh','status').stdout)
+        self.assertNotIn('busy',cached)
 
     def test_update_checks_respect_disabled_drivers_and_daily_setting(self):
         self.box.installed(self.box.package()); self.box.package(build=2,remote=True)

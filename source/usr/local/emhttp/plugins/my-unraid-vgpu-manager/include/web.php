@@ -51,12 +51,8 @@ function vgpu_set_settings($values) {
 }
 function vgpu_init_language() {
     global $locale, $display, $vgpu_language, $vgpu_translations;
-    // Unraid's page locale takes precedence. Standalone POST requests use its
-    // existing session or display settings, never a plugin/browser preference.
-    if (!isset($locale) && !isset($_SESSION['locale']) && session_status() === PHP_SESSION_NONE &&
-        isset($_COOKIE[session_name()]) && !headers_sent()) {
-        @session_start(['read_and_close' => true]);
-    }
+    // Use Unraid's page locale or an already loaded session. Standalone POSTs
+    // read its saved display setting without opening (and waiting on) a session.
     $config = @parse_ini_file('/boot/config/plugins/dynamix/dynamix.cfg', true, INI_SCANNER_RAW) ?: [];
     $unraid_locale = $locale ?? $_SESSION['locale'] ?? $display['locale'] ?? $config['display']['locale'] ?? '';
     $vgpu_language = strncasecmp((string)$unraid_locale, 'zh', 2) === 0 ? 'zh_CN' : 'en';
@@ -104,9 +100,13 @@ function vgpu_run($arguments, $lock = null) {
 function vgpu_command_text($args) { return vgpu_run($args)['output']; }
 function vgpu_driver_updates($mode = 'status') {
     global $vgpu_emhttp;
-    $result = vgpu_run(['/bin/bash', "$vgpu_emhttp/include/update-check.sh", $mode]);
+    // Only the metadata check gets this deadline. Kill its entire process group
+    // so a stuck descendant cannot keep PHP's output pipe or update lock open.
+    $result = vgpu_run(['/usr/bin/timeout', '--signal=KILL', '30s', '/bin/bash', "$vgpu_emhttp/include/update-check.sh", $mode]);
+    // proc_close can return the raw signal (9), rather than a shell's 128+9.
+    if (in_array($result['code'], [9, 124, 137], true)) throw new RuntimeException('Driver update check timed out. Try again.');
     $state = json_decode($result['output'], true);
-    if (!is_array($state) || !isset($state['drivers'])) throw new RuntimeException('Could not check driver updates. Try again.');
+    if ($result['code'] !== 0 || !is_array($state) || !isset($state['drivers'])) throw new RuntimeException('Could not check driver updates. Try again.');
     foreach ($state['drivers'] as &$driver) {
         $labels = ['disabled'=>'Not enabled', 'unchecked'=>'Not checked', 'current'=>'No newer driver available',
             'missing'=>'Not installed for this kernel', 'pinned'=>'A fixed driver version is selected',

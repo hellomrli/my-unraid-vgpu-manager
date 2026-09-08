@@ -96,9 +96,9 @@ $docker = json_decode((string)@file_get_contents('/etc/docker/daemon.json'), tru
 $docker_gpu = isset($docker['runtimes']['nvidia']);
 $action_url = "/plugins/$vgpu_plugin/include/actions.php";
 $labels = [];
-foreach (['Profile','Type','Framebuffer','Displays','Max resolution','FRL','Free','No profiles are available on this GPU.','Select a profile first.','Remove this vGPU? Detach it from VMs first.','Stop GPU workloads before restarting NVIDIA services. Continue?','Uninstall NVIDIA? Stop GPU VMs and containers first.','Uninstall Intel i915 SR-IOV? Stop VMs using its VFs first.','Detach this vGPU from {vm}? Cold-start the VM to release it.','Copied.','Copy failed. Select and copy the XML manually.','The request failed. Refresh the page and check the result before retrying.','Enter a full Unraid kernel release, for example 6.18.47-Unraid.','Installing NVIDIA driver','Updating NVIDIA driver','Uninstalling NVIDIA driver','Restarting NVIDIA services','Installing Intel driver','Updating Intel driver','Uninstalling Intel driver','Preparing drivers for the next kernel', 'Checking for driver updates…', 'Could not check driver updates. Try again.'] as $label) $labels[$label] = vgpu_t($label);
+foreach (['Profile','Type','Framebuffer','Displays','Max resolution','FRL','Free','No profiles are available on this GPU.','Select a profile first.','Remove this vGPU? Detach it from VMs first.','Stop GPU workloads before restarting NVIDIA services. Continue?','Uninstall NVIDIA? Stop GPU VMs and containers first.','Uninstall Intel i915 SR-IOV? Stop VMs using its VFs first.','Detach this vGPU from {vm}? Cold-start the VM to release it.','Copied.','Copy failed. Select and copy the XML manually.','The request failed. Refresh the page and check the result before retrying.','Enter a full Unraid kernel release, for example 6.18.47-Unraid.','Installing NVIDIA driver','Updating NVIDIA driver','Uninstalling NVIDIA driver','Restarting NVIDIA services','Installing Intel driver','Updating Intel driver','Uninstalling Intel driver','Preparing drivers for the next kernel', 'Checking for driver updates…', 'Could not check driver updates. Try again.', 'Driver update check timed out. Try again.', 'Another driver update check is running. Try again shortly.', 'Update check failed. Try again.', 'The page token expired. Refresh the page and try again.'] as $label) $labels[$label] = vgpu_t($label);
 ?>
-<link rel="stylesheet" href="/plugins/my-unraid-vgpu-manager/include/style.css?v=2026.09.08a">
+<link rel="stylesheet" href="/plugins/my-unraid-vgpu-manager/include/style.css?v=2026.09.09">
 <div class="vgpu-manager" lang="<?= $vgpu_language === 'zh_CN' ? 'zh-CN' : 'en' ?>">
 <div id="vgpu-message" class="vgpu-banner" role="status" aria-live="polite" hidden></div>
 <div class="vgpu-tabs" role="tablist" aria-label="<?= vgpu_e('GPU settings') ?>">
@@ -348,4 +348,4 @@ foreach (['Profile','Type','Framebuffer','Displays','Max resolution','FRL','Free
 </div>
 </div>
 <script>window.vgpuPage = <?= vgpu_json(['gpuTypes'=>$gpu_types,'labels'=>$labels,'language'=>$vgpu_language,'autoUpdates'=>vgpu_setting('update_check','true') === 'true','showUpgrade'=>$show_upgrade]) ?>;</script>
-<script src="/plugins/my-unraid-vgpu-manager/include/ui.js?v=2026.09.08a"></script>
+<script src="/plugins/my-unraid-vgpu-manager/include/ui.js?v=2026.09.09"></script>

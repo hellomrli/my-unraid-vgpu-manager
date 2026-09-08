@@ -5,8 +5,10 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import shutil
 import sys
+import time
 import xml.etree.ElementTree as ET
 
 root = Path('/tmp/fixture')
@@ -35,15 +37,29 @@ if command == 'curl':
     url = next((v for v in reversed(args) if v.startswith('https://')), '')
     out = option('--output', option('-o'))
     if state.get('offline'):
-        finish(22, 'simulated HTTP failure')
+        print('curl: (22) simulated HTTP failure', file=sys.stderr)
+        finish(22)
     if '/-/client-token' in url:
         payload = state.get('license_token', 'new-client-configuration-token').encode()
     elif 'api.github.com' in url:
         match = re.search(r'/repos/hellomrli/(.+)/releases/tags/(.+)$', url)
         key = '|'.join(match.groups()) if match else ''
+        if state.get('hang_metadata'):
+            # Deliberately ignore curl's own timeout and graceful termination.
+            # The web deadline must kill this descendant and release its lock.
+            signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            time.sleep(120)
+        delay = state.get('metadata_delays', {}).get(key, 0)
+        limit = float(option('--max-time', '120'))
+        if delay:
+            time.sleep(min(delay, limit))
+            if delay >= limit:
+                print('curl: (28) simulated metadata timeout', file=sys.stderr)
+                finish(28)
         names = state.get('releases', {}).get(key)
         if names is None:
-            finish(22, 'simulated 404: no release for kernel')
+            print('curl: (22) simulated 404: no release for kernel', file=sys.stderr)
+            finish(22)
         payload = json.dumps({'assets': [{'name': n} for n in names]}).encode()
     else:
         filename = url.rsplit('/', 1)[-1]

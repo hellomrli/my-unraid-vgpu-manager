@@ -2,11 +2,11 @@
 <!DOCTYPE PLUGIN [
   <!ENTITY name      "my-unraid-vgpu-manager">
   <!ENTITY author    "hellomrli">
-  <!ENTITY version   "2026.09.08a">
+  <!ENTITY version   "2026.09.09">
   <!ENTITY launch    "Settings/my-unraid-vgpu-manager">
   <!ENTITY gitURL    "https://github.com/&author;/&name;/raw/master">
   <!ENTITY pluginURL "&gitURL;/&name;.plg">
-  <!ENTITY md5       "34dac06033dad6591e739a3cad5592d9">
+  <!ENTITY md5       "72fb187a28373b965949c697c0c870be">
   <!ENTITY plugin    "/boot/config/plugins/&name;">
   <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
   <!ENTITY packages  "/boot/config/plugins/&name;/packages">
@@ -15,6 +15,16 @@
 <PLUGIN  name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" min="6.11.5" support="https://github.com/&author;/&name;">
 
 <CHANGES>
+##2026.09.09
+- FIX: driver update checks no longer open a PHP session just to read the
+  interface language, avoiding waits on another Unraid request's session lock.
+- FIX: bound metadata lookups and the whole web check process, including child
+  processes. The browser stops waiting after 35 seconds and allows retry.
+- FIX: handle stalled response bodies, expired page tokens and failed checks;
+  hide stale update buttons and ignore responses arriving after a timeout.
+- FIX: report a busy background check and keep one driver's network error from
+  corrupting the other driver's result. Preserve the existing interface layout.
+
 ##2026.09.08a
 - FIX: restore the original compact panels, tables, tabs and form layout.
 - CHG: follow the Unraid interface language; remove the plugin language picker.

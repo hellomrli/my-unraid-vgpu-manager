@@ -144,10 +144,10 @@ nvidia_active_series() {
 }
 
 release_assets() {
-  local source="$1" kernel="$2" series="${3:-}" want="${4:-latest}" repo data name
+  local source="$1" kernel="$2" series="${3:-}" want="${4:-latest}" max_time="${5:-25}" repo data name
   valid_kernel "$kernel" && valid_version "$want" || return 1
   case "$source" in nvidia) repo="$NVIDIA_REPO" ;; i915) repo="$I915_REPO" ;; *) return 1 ;; esac
-  data="$(curl -fsSL --connect-timeout 8 --max-time 25 \
+  data="$(curl -fsSL --connect-timeout 8 --max-time "$max_time" \
     "https://api.github.com/repos/${repo}/releases/tags/${kernel}")" || return 1
   jq -e '.assets | type == "array"' <<< "$data" >/dev/null 2>&1 || return 1
   while IFS= read -r name; do

@@ -128,12 +128,100 @@ const {chromium} = require(process.env.PLAYWRIGHT_CORE || 'playwright-core');
     setBootKernel('6.18.44-Unraid');
     await page.reload();
     assert.equal(await page.locator('#kernel-upgrade-panel').count(),0);
+
+    // A request that never sends headers must release the automatic check.
+    // Advance the browser clock instead of waiting 35 real seconds per case.
+    await page.goto(url);
+    await page.clock.install();
+    const checkButton=page.locator('#vgpu-update-form button');
+    const checkMessage=page.locator('#update-check-message');
+    const waitForCheckEnd=() => page.waitForFunction(() => !document.querySelector('#vgpu-update-form button').disabled);
+    const retryCheck=async () => {
+      await checkButton.click(); await waitForUpdates();
+      assert.match(await nvidiaStatus.innerText(),/535\.310\.00/);
+      assert.equal(await page.locator('#driver-status-panel [data-update-button="nvidia"]').isVisible(),true);
+    };
+    const endpoint='**/plugins/my-unraid-vgpu-manager/include/actions.php';
+    const savedConfig=fs.readFileSync(configFile,'utf8');
+    fs.writeFileSync(configFile,savedConfig.replace(/^update_check=false$/m,'update_check=true'));
+    let pendingRoute;
+    await page.route(endpoint,route => { pendingRoute=route; });
+    await page.reload();
+    await page.waitForFunction(() => document.querySelector('#vgpu-update-form button').disabled);
+    await page.clock.fastForward(36000); await waitForCheckEnd();
+    assert.match(await checkMessage.innerText(),/检查驱动更新超时/);
+    assert.equal(await page.locator('#driver-status-panel [data-update-button="nvidia"]').isVisible(),false);
+    await page.screenshot({path:path.join(artifacts,'zh-update-timeout.png'),fullPage:true});
+    await page.unroute(endpoint);
+    assert.ok(pendingRoute);
+    await pendingRoute.abort().catch(() => {});
+    fs.writeFileSync(configFile,savedConfig);
+    await retryCheck();
+
+    // Headers arrive, but the JSON body stalls and ignores cancellation.
+    // A late body must never overwrite a successful retry with stale results.
+    await page.evaluate(() => {
+      const original=window.fetch;
+      window.__restoreUpdateFetch=() => { window.fetch=original; };
+      window.fetch=async (_input,options) => {
+        window.__updateSignal=options.signal;
+        const encoder=new TextEncoder();
+        return new Response(new ReadableStream({start(controller) {
+          controller.enqueue(encoder.encode('{"ok":true,'));
+          window.__finishUpdateBody=() => {
+            controller.enqueue(encoder.encode('"updates":{"drivers":{"nvidia":{"status":"current","message":"STALE"},"i915":{"status":"current","message":"STALE"}}}}'));
+            controller.close();
+          };
+        }}),{headers:{'Content-Type':'application/json'}});
+      };
+    });
+    await checkButton.click();
+    await page.clock.fastForward(36000); await waitForCheckEnd();
+    assert.match(await checkMessage.innerText(),/检查驱动更新超时/);
+    assert.equal(await page.evaluate(() => window.__updateSignal.aborted),true);
+    await page.evaluate(() => window.__restoreUpdateFetch());
+    await retryCheck();
+    await page.evaluate(() => window.__finishUpdateBody());
+    await page.clock.fastForward(36000);
+    assert.match(await nvidiaStatus.innerText(),/535\.310\.00/);
+    assert.equal(await checkMessage.innerText(),'');
+
+    // Failures before fetch also have to clear the guard and button state.
+    await page.evaluate(() => {
+      window.__originalFormData=window.FormData;
+      window.FormData=class { constructor() { throw new Error('Simulated form failure'); } };
+    });
+    await checkButton.click(); await waitForCheckEnd();
+    assert.match(await checkMessage.innerText(),/无法检查驱动更新/);
+    await page.evaluate(() => { window.FormData=window.__originalFormData; });
+    await retryCheck();
+
+    for (const [response,expected] of [
+      [{status:403,json:{error:'wrong csrf_token'}},/页面令牌已过期/],
+      [{status:502,contentType:'text/html',body:'Bad gateway'},/无法检查驱动更新/]
+    ]) {
+      await page.route(endpoint,route => route.fulfill(response));
+      await checkButton.click(); await waitForCheckEnd();
+      assert.match(await checkMessage.innerText(),expected);
+      assert.equal(await page.locator('#driver-status-panel [data-update-button="nvidia"]').isVisible(),false);
+      await page.unroute(endpoint);
+      await retryCheck();
+    }
+    await page.route(endpoint,async route => {
+      const response=await route.fetch(); const result=await response.json();
+      result.updates.busy=true;
+      await route.fulfill({response,json:result});
+    });
+    await checkButton.click(); await waitForCheckEnd();
+    assert.match(await checkMessage.innerText(),/后台已有驱动更新检查正在进行/);
+    await page.unroute(endpoint);
+    await retryCheck();
     assert.deepEqual(errors,[]);
     if (process.env.VGPU_LEGACY_PAGE) {
       await page.goto(new URL('/legacy',url).href);
       await page.screenshot({path:path.join(artifacts,'legacy-drivers.png'),fullPage:true});
     }
-    console.log('Browser checks passed: original panel layout, Unraid language, update versions/buttons, failed checks, notification-only upgrade controls, POST actions, tab persistence, UUIDs, safe VM names/JSON, CSRF and mobile layout.');
+    console.log('Browser checks passed: original layout, Unraid language, update versions/buttons, stalled requests/bodies, timeouts and retries, late responses, form/HTTP failures, busy checks, notification-only upgrade controls, POST actions, tab persistence, UUIDs, safe VM names/JSON, CSRF and mobile layout.');
     console.log('Screenshots: '+artifacts);
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode=1; });

@@ -24,7 +24,7 @@ https://github.com/hellomrli/my-unraid-vgpu-manager/raw/master/my-unraid-vgpu-ma
 
 “驱动状态”中发现更新时，会显示 **当前版本 → 可更新版本**，同时显示两边的构建号，并提供“更新驱动”按钮。NVIDIA 与 Intel 分别检查，同版本的新构建也能识别；NVIDIA 保持当前已安装的系列。
 
-启用每天检查更新后，打开页面会异步获取或复用最近的检查结果，也可以点击“检查驱动更新”立即查询。这个检查只读取 Release 信息，不下载或安装驱动。检查失败会显示失败提示；安装完成、卸载驱动或更换内核后，旧更新提示失效。未启用的驱动不查询更新。
+启用每天检查更新后，打开页面会异步获取或复用最近的检查结果，也可以点击“检查驱动更新”立即查询。这个检查只读取 Release 信息，不下载或安装驱动。检查设有 35 秒超时，网络或接口无响应时显示超时提示并恢复检查按钮；后台已有检查在运行时会提示稍后重试。检查失败会隐藏驱动状态中的旧更新按钮，不能据此判断驱动已是最新；安装完成、卸载驱动或更换内核后，旧更新提示失效。未启用的驱动不查询更新。
 
 ## Unraid 升级前的驱动准备
 
@@ -118,6 +118,6 @@ npm ci
 python3 tests/browser_server.py
 ```
 
-检查依赖：PHP CLI + SimpleXML、Python 3.9+、Node.js、ShellCheck、jq、bubblewrap。回归测试在无网络、无宿主 GPU 的隔离文件系统中运行，不调用宿主的驱动管理命令。浏览器用同样的隔离文件系统和本地 HTTP 服务验证表单、跟随 Unraid 语言、驱动版本提示、通知入口和移动布局。
+检查依赖：PHP CLI + SimpleXML、Python 3.9+、Node.js、ShellCheck、jq、bubblewrap、GNU coreutils（与 Unraid 一致；默认使用 uutils 的开发机需提供 `gnutimeout`）。回归测试在无网络、无宿主 GPU 的隔离文件系统中运行，不调用宿主的驱动管理命令。浏览器用同样的隔离文件系统和本地 HTTP 服务验证表单、跟随 Unraid 语言、驱动版本提示、通知入口、移动布局，以及无响应、超时后重试和迟到响应的处理。
 
 本轮 review 的依据、修复清单和实机验证边界见 [REVIEW.md](REVIEW.md)。

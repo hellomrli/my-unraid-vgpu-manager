@@ -190,6 +190,8 @@
   "Check for driver updates": "检查驱动更新",
   "Checking for driver updates…": "正在检查驱动更新…",
   "Could not check driver updates. Try again.": "无法检查驱动更新，请重试。",
+  "Driver update check timed out. Try again.": "检查驱动更新超时，请稍后重试。",
+  "Another driver update check is running. Try again shortly.": "后台已有驱动更新检查正在进行，请稍后重试。",
   "Drivers are installed on demand. Installing this plugin does not change your GPU setup until you click Install.": "驱动按需安装。安装本插件后，只有点击安装才会更改 GPU 配置。",
   "The NVIDIA vGPU driver is not installed yet.": "尚未安装 NVIDIA vGPU 驱动。",
   "The Intel i915 SR-IOV driver is not installed yet.": "尚未安装 Intel i915 SR-IOV 驱动。",
