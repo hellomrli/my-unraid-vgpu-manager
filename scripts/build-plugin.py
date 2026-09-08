@@ -21,6 +21,14 @@ def payload(version):
             info.uid = info.gid = 0
             info.uname = info.gname = 'root'
             info.mtime = timestamp
+            # Git tracks executability, while other permission bits vary with
+            # the checkout's umask. Normalize those bits for portable builds.
+            if info.issym():
+                info.mode = 0o777
+            elif info.isdir() or info.mode & 0o100:
+                info.mode = 0o755
+            else:
+                info.mode = 0o644
             if info.isfile():
                 with path.open('rb') as file: archive.addfile(info, file)
             else: archive.addfile(info)
