@@ -2,11 +2,11 @@
 <!DOCTYPE PLUGIN [
   <!ENTITY name      "my-unraid-vgpu-manager">
   <!ENTITY author    "hellomrli">
-  <!ENTITY version   "2026.08.29b">
+  <!ENTITY version   "2026.09.08">
   <!ENTITY launch    "Settings/my-unraid-vgpu-manager">
   <!ENTITY gitURL    "https://github.com/&author;/&name;/raw/master">
   <!ENTITY pluginURL "&gitURL;/&name;.plg">
-  <!ENTITY md5       "7dcddd6efbad7fea24579b5adeaaa291">
+  <!ENTITY md5       "2140f9f78aef43f7174f8ae6006cdd8f">
   <!ENTITY plugin    "/boot/config/plugins/&name;">
   <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
   <!ENTITY packages  "/boot/config/plugins/&name;/packages">
@@ -15,6 +15,26 @@
 <PLUGIN  name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" min="6.11.5" support="https://github.com/&author;/&name;">
 
 <CHANGES>
+##2026.09.08
+- ADD: Simplified Chinese UI, English and follow-Unraid language selection.
+- ADD: detect the next boot kernel from /boot/bzimage after an Unraid OS update.
+  Download and verify packages only for GPU drivers the user already enabled;
+  preserve the installed NVIDIA series, and notify before reboot if packages
+  are missing or downloads fail. A post-update hook and a one-minute fallback
+  check handle staged upgrades; the page also supports manual preparation.
+- FIX: restore opted-in cached drivers for the running kernel at boot, before
+  Docker/libvirt and VM autostart. No driver downloads occur during boot restore.
+- FIX: explicit updates query GitHub and recognize same-version rebuilds.
+  Failed downloads/checksums/installations no longer report success. Keep
+  cached packages for current, next and rollback kernels and other drivers.
+- FIX: check both persistent and active VM bindings; retain device definitions
+  when stop/remove fails. Serialize GPU operations and validate submitted input.
+- FIX: use sysfs PF/VF links, preserve existing VFs when the count is unchanged,
+  enforce hardware limits and propagate driver/VF operation errors.
+- FIX: saving general settings no longer resets vGPU unlock; refresh license
+  tokens when the endpoint changes. Safe DOM rendering and HTTP clipboard fallback.
+- ADD: reproducible plugin packaging and isolated lifecycle regression tests.
+
 ##2026.08.29b
 - ADD: dual driver series support. The driver repo now publishes BOTH the
   16.x LTS (535.309.01) and the 19.x LTS (580.178.05) merged drivers for each
@@ -140,139 +160,82 @@
 
 </CHANGES>
 
-<FILE Run="/bin/bash">
-<INLINE>
-rm -f $(ls /boot/config/plugins/&name;/&name;*.txz 2>/dev/null|grep -v '&version;')
-</INLINE>
-</FILE>
-
 <FILE Name="/boot/config/plugins/&name;/&name;-&version;.txz" Run="upgradepkg --install-new">
 <URL>&gitURL;/packages/&name;-&version;.txz</URL>
 <MD5>&md5;</MD5>
 </FILE>
 
-<FILE Run="/bin/bash">
-<INLINE>
-# LOCAL-FIRST fallback: if the plugin package was placed locally (no GitHub
-# hosting yet), install it from the flash drive.
-if [ ! -d "&emhttp;" ]; then
-  LOCAL_PLUGIN_PKG="$(ls /boot/config/plugins/&name;/&name;*.txz 2>/dev/null | head -1)"
-  if [ -n "${LOCAL_PLUGIN_PKG}" ]; then
-    echo "---Installing local plugin package $(basename "${LOCAL_PLUGIN_PKG}")---"
-    upgradepkg --install-new "${LOCAL_PLUGIN_PKG}"
-  fi
-fi
-</INLINE>
-</FILE>
-
 <FILE Name="&emhttp;/README.md">
 <INLINE>
-**Unraid vGPU Manager**
+**Unraid vGPU Manager / Unraid vGPU 管理器**
 
-Unified management of NVIDIA vGPU and Intel i915 SR-IOV on Unraid:
+Manage NVIDIA vGPU and Intel i915 SR-IOV from Settings. 中文 / English 可切换。
+Drivers are installed on demand. OS upgrade preparation downloads only drivers
+you already enabled, for the kernel staged on the boot drive, and reports their
+readiness before reboot. Enabled packages are restored locally at the next boot.
 
-- NVIDIA vGPU (merged driver): split a GPU into virtual GPUs (mdev) for VMs,
-  while the host keeps full GPU access for docker (--gpus all). License
-  settings, unlock and device management all live in the plugin page.
-- Intel i915 SR-IOV: split an Intel iGPU into up to 7 VFs for VM passthrough.
-  VF count, vfio-pci binding and syslinux boot parameters are managed here.
-
-Drivers are installed on demand from the plugin page - installing this plugin
-does not touch your GPU setup until you choose to.
+在设置页面按需安装驱动。Unraid 更新后仅预下载您已启用的驱动，
+核对新内核与校验结果并提示是否就绪；重启后从本地恢复对应驱动。
 </INLINE>
 </FILE>
 
 <FILE Run="/bin/bash">
 <INLINE>
+#!/bin/bash
+source /usr/local/emhttp/plugins/my-unraid-vgpu-manager/include/common.sh
+mkdir -p "$PLGCFG" || exit 1
+# Migrate missing settings without opting an existing user into any driver.
+for pair in first_installation=true driver_version=latest update_check=true \
+  nvidia_installed=false intel_installed=false nvidia_series=auto unlock=false \
+  nvidia_license_server= nvidia_license_port=443 nvidia_feature_type=0 \
+  nvidia_license_verify=false nvidia_load_uvm=true nvidia_load_modeset=true \
+  nvidia_load_drm=true intel_vf_number=7 ui_language=zh_CN kernel_upgrade_check=true; do
+  key="${pair%%=*}"
+  grep -q "^${key}=" "$SETTINGS" 2&gt;/dev/null || set_setting "$key" "${pair#*=}" || exit 1
+done
+# Preserve the old unlock key during migration.
+if ! grep -q '^nvidia_unlock=' "$SETTINGS"; then set_setting nvidia_unlock "$(setting unlock)"; fi
 
-KERNEL_V="$(uname -r)"
-
-#Create settings file if not found and migrate missing keys
-if [ ! -f "&plugin;/settings.cfg" ]; then
-  echo 'first_installation=true
-driver_version=latest
-update_check=true
-unlock=false
-nvidia_installed=false
-nvidia_license_server=
-nvidia_license_port=443
-nvidia_feature_type=0
-nvidia_load_uvm=true
-nvidia_load_modeset=true
-nvidia_load_drm=true
-intel_installed=false
-intel_vf_number=7' > "&plugin;/settings.cfg"
-fi
-for key in unlock update_check nvidia_installed intel_installed; do
-  if ! grep -q "^${key}=" "&plugin;/settings.cfg"; then
-    echo "${key}=false" >> "&plugin;/settings.cfg"
+# Old flat caches: infer each file's own kernel, not the running kernel.
+for package in "$PLGCFG/packages/"*.txz; do
+  [ -f "$package" ] || continue
+  name="${package##*/}"
+  if [[ "$name" =~ -([0-9]+\.[0-9]+\.[0-9]+)-Unraid-[0-9]+\.txz$ ]]; then
+    dir="$PLGCFG/packages/${BASH_REMATCH[1]}"
+    mkdir -p "$dir"
+    mv -n -- "$package" "$dir/"
+    [ ! -f "$package.md5" ] || mv -n -- "$package.md5" "$dir/"
   fi
 done
-if ! grep -q "^nvidia_series=" "&plugin;/settings.cfg"; then
-  echo "nvidia_series=auto" >> "&plugin;/settings.cfg"
+"$EMHTTP/include/exec.sh" configure_cron || exit 1
+# Unraid root files disappear at reboot. Restore only already enabled drivers
+# from verified local caches; installation of this plugin does not opt in.
+if ! "$EMHTTP/scripts/rc.vgpu" restore; then
+  bilingual 'Some enabled GPU packages could not be restored. Open vGPU Manager to check the running kernel.' '部分已启用的 GPU 驱动未能恢复，请打开 vGPU 管理页面检查当前内核的驱动包。'
 fi
-if ! grep -q "^nvidia_license_server=" "&plugin;/settings.cfg"; then
-  echo "nvidia_license_server=" >> "&plugin;/settings.cfg"
+if [ "$(setting first_installation)" = true ]; then
+  vgpu_notify "$(bilingual 'Plugin installed. Open Settings &gt; Unraid vGPU Manager to install the GPU drivers you need.' '插件已安装，请到“设置 &gt; Unraid vGPU Manager”按需安装 GPU 驱动。')"
+  set_setting first_installation false
 fi
-if ! grep -q "^nvidia_license_port=" "&plugin;/settings.cfg"; then
-  echo "nvidia_license_port=443" >> "&plugin;/settings.cfg"
-fi
-if ! grep -q "^nvidia_feature_type=" "&plugin;/settings.cfg"; then
-  echo "nvidia_feature_type=0" >> "&plugin;/settings.cfg"
-fi
-if ! grep -q "^intel_vf_number=" "&plugin;/settings.cfg"; then
-  echo "intel_vf_number=7" >> "&plugin;/settings.cfg"
-fi
-
-#Move old flat package directory layout to per-kernel directories
-mkdir -p "&packages;/${KERNEL_V%%-*}"
-if find &packages; -maxdepth 1 -type f -name "*.txz" 2>/dev/null | grep -q . ; then
-  mv $(find &packages; -maxdepth 1 -type f -name "*.txz*") "&packages;/${KERNEL_V%%-*}/" 2>/dev/null
-fi
-
-#Drivers are NEVER downloaded or installed by the plugin itself - only when
-#the user explicitly clicks Install on the plugin page (exec.sh install_nvidia
-#/ install_intel call download.sh). Systems that don't use vGPU stay untouched.
-
-#Enable the daily update check
-if [ "$(grep "^update_check=" "&plugin;/settings.cfg" | cut -d '=' -f2)" == "true" ]; then
-  if ! crontab -l 2>/dev/null | grep -q "&emhttp;/include/update-check.sh"; then
-    (crontab -l 2>/dev/null ; echo "$((RANDOM % 59)) $(shuf -i 8-9 -n 1) * * * &emhttp;/include/update-check.sh &amp;>/dev/null 2>&amp;1") | crontab -
-  fi
-fi
-
-#First installation hint
-if [ "$(grep "^first_installation=" "&plugin;/settings.cfg" | cut -d '=' -f2)" == "true" ]; then
-  /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Unraid vGPU Manager" -d "Installation successful! Go to Settings -> Unraid vGPU Manager to install a driver and configure your GPUs." -l "/&launch;"
-  sed -i '/^first_installation=/c\first_installation=false' "&plugin;/settings.cfg"
-fi
-echo
-echo "----- Unraid vGPU Manager plugin v&version; ready -----"
-echo "Drivers are NOT installed by default - use the plugin page to install."
-
+# Inspect a previously staged OS update without blocking plugin installation.
+nohup "$EMHTTP/include/upgrade-check.sh" auto &gt;&gt;/var/log/my-unraid-vgpu-manager-upgrade.log 2&gt;&amp;1 &amp;
+bilingual 'Unraid vGPU Manager is ready.' 'Unraid vGPU 管理器已就绪。'
 </INLINE>
 </FILE>
 
 <FILE Run="/bin/bash" Method="remove">
 <INLINE>
-
-echo "-----------------------------------------------"
-echo "---Uninstalling Unraid vGPU Manager...---"
-echo "-----------------------------------------------"
-#Stop configured devices and daemons
-/bin/bash &emhttp;/scripts/rc.vgpu stop 2>/dev/null
-#Remove the update check cron job
-crontab -l 2>/dev/null | grep -v "&emhttp;/include/update-check.sh" | crontab -
-#Remove plugin related files (the kernel modules stay loaded until reboot)
+echo "Removing Unraid vGPU Manager..."
+# Remove only this plugin's scheduled commands.
+crontab -l 2&gt;/dev/null | grep -Fv '/usr/local/emhttp/plugins/my-unraid-vgpu-manager/include/update-check.sh' | grep -Fv '/usr/local/emhttp/plugins/my-unraid-vgpu-manager/include/upgrade-check.sh' | crontab -
+# A running VM may still hold a device; never force-stop it during plugin removal.
+/bin/bash /usr/local/emhttp/plugins/my-unraid-vgpu-manager/scripts/rc.vgpu stop || true
+rm -f /usr/local/emhttp/plugins/dynamix.plugin.manager/post-hooks/my-unraid-vgpu-manager
+rm -f /boot/config/modprobe.d/my-unraid-vgpu-manager-i915.conf /etc/modprobe.d/my-unraid-vgpu-manager-i915.conf
+rm -f /var/tmp/my-unraid-vgpu-manager-upgrade.json /var/tmp/my-unraid-vgpu-manager-update-*
 removepkg &name;-&version;
 rm -rf /usr/local/emhttp/plugins/&name;
-rm -rf &plugin;
-echo
-echo "-----------------------------------------------------------------------"
-echo "---Unraid vGPU Manager uninstalled, please reboot to unload the drivers---"
-echo "-----------------------------------------------------------------------"
-echo
-
+echo "Plugin removed. Reboot to unload drivers. Settings and driver caches remain on the flash drive."
 </INLINE>
 </FILE>
 </PLUGIN>

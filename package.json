@@ -1,0 +1,10 @@
+{
+  "name": "my-unraid-vgpu-manager-checks",
+  "private": true,
+  "scripts": {
+    "test:browser": "python3 tests/browser_server.py"
+  },
+  "devDependencies": {
+    "playwright-core": "1.63.0"
+  }
+}

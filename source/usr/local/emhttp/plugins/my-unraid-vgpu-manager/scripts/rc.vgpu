@@ -6,21 +6,22 @@
 #
 # Drivers are NOT installed by default: the plugin page calls
 #   rc.vgpu nvidia_install / nvidia_uninstall / intel_install / intel_uninstall
-# to opt in. ensure/start only bring up stacks that are already installed.
+# to opt in. restore/ensure reinstall only those opted-in drivers from cache.
 #
 # usage: rc.vgpu <command>
-#   ensure       - boot/plugin-update entry point: start installed stacks
+#   restore      - reinstall opted-in packages for this kernel, without network
+#   ensure       - restore and start opted-in stacks before VM autostart
 #   start        - load modules, start daemons, apply configured devices
 #   stop         - stop devices and daemons
 #   restart      - stop + start
-#   update       - re-download packages, then (re)start installed stacks
+#   update       - apply verified cached packages to enabled stacks
 #   apply        - (re)define and start all configured mdev devices
 #   status       - print a short status summary
-#   nvidia_install    - download + install the NVIDIA merged driver package
+#   nvidia_install    - install a verified NVIDIA merged driver package
 #   nvidia_uninstall  - stop devices/daemons and remove the NVIDIA package
 #   nvidia_update     - live-install a newer downloaded NVIDIA package
 #   nvidia_license    - (re)write gridd.conf from the page settings
-#   intel_install     - download + install the i915 SR-IOV package
+#   intel_install     - install a verified i915 SR-IOV package
 #   intel_uninstall   - remove the i915 package
 #   intel_set_vfs N   - set the VF count (hot)
 #   intel_bind        - bind all VFs to vfio-pci
@@ -31,24 +32,14 @@
 #   /boot/config/nvidia-vgpu/profile_override.toml               - vgpu_unlock overrides
 #   /boot/config/nvidia-vgpu/vgpuConfig.xml                      - optional vgpuConfig.xml override
 
-PLUGIN="my-unraid-vgpu-manager"
-PLGCFG="/boot/config/plugins/${PLUGIN}"
-SETTINGS="${PLGCFG}/settings.cfg"
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../include/common.sh"
 DEVCFG="${PLGCFG}/vgpu-devices.cfg"
 USERCFG="/boot/config/nvidia-vgpu"
 UNLOCK_DIR="/etc/vgpu_unlock"
 UNLOCK_LIB="/usr/local/lib/libvgpu_unlock_rs.so"
 XML_OVERRIDE="${USERCFG}/vgpuConfig.xml"
 XML_TARGET="/usr/share/nvidia/vgpu/vgpuConfig.xml"
-KERNEL_V="$(uname -r)"
-PKGDIR="${PLGCFG}/packages/${KERNEL_V%%-*}"
 TYPES_TIMEOUT=60
-
-# vGPU-capable device ids, extracted from each branch's vgpuConfig.xml:
-#   16.x (535.309.01, LTS): Maxwell/Pascal/Volta/Turing-GL/Ampere/Ada ...
-#   19.x (580.178.05, LTS): same minus Pascal (P4/P40/P100/P6), plus Blackwell
-VGPU16_IDS="0x13bd 0x13f2 0x13f3 0x15f7 0x15f8 0x15f9 0x1b38 0x1bb3 0x1bb4 0x1db1 0x1db3 0x1db4 0x1db5 0x1db6 0x1df6 0x1e30 0x1e78 0x1eb8 0x2230 0x2231 0x2233 0x2235 0x2236 0x2238 0x25b6 0x26b1 0x26b2 0x26b5 0x26b9 0x26ba 0x27b6 0x27b8"
-VGPU19_IDS="0x13bd 0x1db1 0x1db3 0x1db4 0x1db5 0x1db6 0x1df6 0x1e30 0x1e78 0x1eb8 0x2230 0x2231 0x2233 0x2235 0x2236 0x2238 0x25b6 0x26b1 0x26b2 0x26b3 0x26b5 0x26b9 0x26ba 0x27b6 0x27b8 0x2bb5 0x2bb9 0x2c3a"
 
 log() {
   logger -t "${PLUGIN}" -- "$*"
@@ -59,30 +50,14 @@ notify() {
   /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Unraid vGPU Driver" -d "$1" -i "${2:-normal}" -l "/Settings/${PLUGIN}"
 }
 
-setting() {
-  grep -m1 "^${1}=" "${SETTINGS}" 2>/dev/null | cut -d '=' -f2
-}
-
-set_setting() {
-  local key="$1" val="$2"
-  if grep -q "^${key}=" "${SETTINGS}" 2>/dev/null; then
-    sed -i "s|^${key}=.*|${key}=${val}|" "${SETTINGS}"
-  else
-    echo "${key}=${val}" >> "${SETTINGS}"
-  fi
-}
-
 pkg_file() {
-  local glob
-  glob="$(nvidia_series_glob)"
-  ls "${PKGDIR}"/nvidia-${glob}*.txz 2>/dev/null | sort -V | tail -1
+  find_package nvidia "$KERNEL_V" "$(nvidia_series)" "${1:-latest}"
 }
 
 i915_pkg_file() {
-  ls "${PKGDIR}"/i915-*.txz 2>/dev/null | sort -V | tail -1
+  find_package i915 "$KERNEL_V"
 }
 
-# package assets are named nvidia-<driver version>-<kernel>-Unraid-1.txz
 pkg_version() {
   local p
   p="$(pkg_file)"
@@ -111,172 +86,128 @@ types_present() {
   ls -d /sys/bus/pci/devices/*/mdev_supported_types/nvidia-* >/dev/null 2>&1
 }
 
-# device ids of all NVIDIA GPUs (display/3d class) present on the host
-nvidia_gpu_ids() {
-  local d
-  for d in /sys/bus/pci/devices/*; do
-    [ -r "$d/vendor" ] && [ -r "$d/device" ] && [ -r "$d/class" ] || continue
-    [ "$(cat "$d/vendor" 2>/dev/null)" = "0x10de" ] || continue
-    case "$(cat "$d/class" 2>/dev/null)" in
-      0x03*) cat "$d/device" ;;
-    esac
-  done | sort -u
-}
-
-# which vGPU driver series the installed hardware supports:
-#   both | 16 | 19 | none (unknown/consumer GPU - manual choice, unlock)
-nvidia_series_caps() {
-  local all16=1 all19=1 found=0 id
-  while read -r id; do
-    [ -z "$id" ] && continue
-    found=1
-    case " ${VGPU16_IDS} " in *" ${id} "*) ;; *) all16=0 ;; esac
-    case " ${VGPU19_IDS} " in *" ${id} "*) ;; *) all19=0 ;; esac
-  done < <(nvidia_gpu_ids)
-  [ "$found" = "1" ] || { echo none; return; }
-  if [ "$all16" = "1" ] && [ "$all19" = "1" ]; then echo both
-  elif [ "$all16" = "1" ]; then echo 16
-  elif [ "$all19" = "1" ]; then echo 19
-  else echo none; fi
-}
-
-# the driver series to operate on: settings nvidia_series (16/19/auto);
-# "auto" resolves via hardware detection (both -> 16, the project default)
-nvidia_series() {
-  local s caps
-  s="$(setting nvidia_series)"
-  case "$s" in 16|19) echo "$s"; return ;; esac
-  caps="$(nvidia_series_caps)"
-  case "$caps" in
-    19) echo 19 ;;
-    *)  echo 16 ;;
-  esac
-}
-
-# package-name glob per series: 16.x == nvidia-535.*, 19.x == nvidia-580.*
-nvidia_series_glob() {
-  case "$(nvidia_series)" in
-    19) echo "580." ;;
-    *)  echo "535." ;;
-  esac
-}
-
 # ============================================================================
 # NVIDIA vGPU section
 # ============================================================================
 
 # write vgpu_unlock config and optional vgpuConfig.xml override; run before daemons
 nvidia_setup_config() {
-  mkdir -p "${USERCFG}" "${UNLOCK_DIR}" /boot/config/modprobe.d
-  [ -f "${USERCFG}/profile_override.toml" ] || touch "${USERCFG}/profile_override.toml"
-  ln -sf "${USERCFG}/profile_override.toml" "${UNLOCK_DIR}/profile_override.toml"
+  mkdir -p "${USERCFG}" "${UNLOCK_DIR}" /boot/config/modprobe.d || return 1
+  [ -f "${USERCFG}/profile_override.toml" ] || touch "${USERCFG}/profile_override.toml" || return 1
+  ln -sf "${USERCFG}/profile_override.toml" "${UNLOCK_DIR}/profile_override.toml" || return 1
   local unlock
   unlock="$(setting nvidia_unlock)"
   [ -n "${unlock}" ] || unlock="$(setting unlock)"
   [ "${unlock}" = "true" ] || unlock="false"
-  echo "unlock = ${unlock}" > "${UNLOCK_DIR}/config.toml"
-  # drop the stale modprobe option file written by the old vgpu-driver plugin
+  echo "unlock = ${unlock}" > "${UNLOCK_DIR}/config.toml" || return 1
+  # Remove only the invalid option; retain the user's other module options.
   # (cudahost=1 is unknown to this driver and silently ignored)
   if [ -f /boot/config/modprobe.d/nvidia.conf ] && grep -q cudahost /boot/config/modprobe.d/nvidia.conf 2>/dev/null; then
-    rm -f /boot/config/modprobe.d/nvidia.conf
-    log "Removed stale /boot/config/modprobe.d/nvidia.conf (invalid cudahost option)"
+    sed -i -E 's/(^|[[:space:]])cudahost=[^[:space:]]+/\1/g' /boot/config/modprobe.d/nvidia.conf
+    log "Removed invalid cudahost option from /boot/config/modprobe.d/nvidia.conf"
   fi
   if [ -f "${XML_OVERRIDE}" ] && [ -d "$(dirname "${XML_TARGET}")" ]; then
     if ! cmp -s "${XML_OVERRIDE}" "${XML_TARGET}"; then
       log "Applying custom vgpuConfig.xml from ${XML_OVERRIDE}"
-      cp -f "${XML_OVERRIDE}" "${XML_TARGET}"
+      cp -f "${XML_OVERRIDE}" "${XML_TARGET}" || return 1
     fi
   fi
+  return 0
 }
 
 # apply the gridd.conf license settings from the plugin page (no external script needed)
 # Supports FastAPI-DLS: fetch the client token from https://<addr>:<port>/-/client-token
 # and point ClientConfigTokenPath at the directory holding it.
 nvidia_apply_license() {
-  local addr port feat ui conf changed=0
+  local addr port feat verify conf old_addr old_port old_verify tmp token changed=0
+  local tok_dir=/etc/nvidia/ClientConfigToken tok_file
+  local -a tls_args=()
   addr="$(setting nvidia_license_server)"
-  port="$(setting nvidia_license_port)"
-  feat="$(setting nvidia_feature_type)"
-  ui="$(setting nvidia_enable_ui)"
-  conf="/etc/nvidia/gridd.conf"
-  local tok_dir="/etc/nvidia/ClientConfigToken"
-  local tok_file="${tok_dir}/client_configuration_token.tok"
-  mkdir -p /etc/nvidia
-  [ -n "${port}" ] || port="443"
-  [ -n "${feat}" ] || feat="0"
-  [ "${ui}" = "true" ] && ui="TRUE" || ui="FALSE"
-
-  # any field change (address/port/feature/UI) must restart gridd to take effect
-  if [ ! -f "${conf}" ] \
-     || [ "$(grep -m1 '^ServerAddress=' "${conf}" 2>/dev/null | cut -d= -f2)" != "${addr}" ] \
-     || [ "$(grep -m1 '^ServerPort=' "${conf}" 2>/dev/null | cut -d= -f2)" != "${port}" ] \
-     || [ "$(grep -m1 '^FeatureType=' "${conf}" 2>/dev/null | cut -d= -f2)" != "${feat}" ] \
-     || [ "$(grep -m1 '^EnableUI=' "${conf}" 2>/dev/null | cut -d= -f2)" != "${ui}" ]; then
+  port="$(setting nvidia_license_port)"; port="${port:-443}"
+  feat="$(setting nvidia_feature_type)"; feat="${feat:-0}"
+  verify="$(setting nvidia_license_verify)"
+  conf=/etc/nvidia/gridd.conf
+  tok_file="$tok_dir/client_configuration_token.tok"
+  [[ "$port" =~ ^[0-9]{1,5}$ ]] && [ "$((10#$port))" -ge 1 ] && [ "$((10#$port))" -le 65535 ] || { log "ERROR: invalid license port"; return 1; }
+  [[ "$feat" =~ ^[012]$ ]] || { log "ERROR: invalid license feature type"; return 1; }
+  if [ -n "$addr" ] && ! [[ "$addr" =~ ^[A-Za-z0-9][A-Za-z0-9.-]*$ || "$addr" =~ ^\[[0-9a-fA-F:]+\]$ ]]; then
+    log "ERROR: enter a license hostname or IP address without a URL or path"
+    return 1
+  fi
+  mkdir -p /etc/nvidia "$tok_dir" /var/lib/nvidia/GridLicensing || return 1
+  old_addr="$(sed -n 's/^ServerAddress=//p' "$conf" 2>/dev/null)"
+  old_port="$(sed -n 's/^ServerPort=//p' "$conf" 2>/dev/null)"
+  old_verify="$(sed -n 's/^# VerifyTLS=//p' "$conf" 2>/dev/null)"
+  tmp="$(mktemp /etc/nvidia/.gridd.XXXXXX)" || return 1
+  if [ -n "$addr" ] && { [ ! -s "$tok_file" ] || [ "$addr" != "$old_addr" ] || [ "$port" != "$old_port" ] || [ "$verify" != "$old_verify" ]; }; then
+    token="$(mktemp "$tok_dir/.token.XXXXXX")" || { rm -f "$tmp"; return 1; }
+    [ "$verify" = true ] || tls_args=(-k)
+    if ! curl --proto '=https' -fsS --connect-timeout 8 --max-time 25 "${tls_args[@]}" \
+        "https://${addr}:${port}/-/client-token" -o "$token" || [ ! -s "$token" ]; then
+      rm -f "$tmp" "$token"
+      log "ERROR: could not fetch the license token; existing runtime license configuration was retained"
+      return 1
+    fi
+    chmod 0600 "$token" && mv -f "$token" "$tok_file" || { rm -f "$tmp" "$token"; return 1; }
     changed=1
   fi
-
-  cat > "${conf}" <<EOF
-# generated by the my-unraid-vgpu-manager plugin
+  cat > "$tmp" <<EOF
+# generated by my-unraid-vgpu-manager
+# VerifyTLS=${verify}
 ServerAddress=${addr}
 ServerPort=${port}
 FeatureType=${feat}
-EnableUI=${ui}
+EnableUI=FALSE
 EOF
-  chmod 0644 "${conf}"
-
-  # FastAPI-DLS: fetch the client token so the Q-series (vDWS/vWS) profiles license.
-  if [ -n "${addr}" ]; then
-    mkdir -p "${tok_dir}" /var/lib/nvidia/GridLicensing
-    if [ ! -s "${tok_file}" ]; then
-      if curl -sk "https://${addr}:${port}/-/client-token" -o "${tok_file}" 2>/dev/null \
-         && [ -s "${tok_file}" ]; then
-        log "Fetched FastAPI-DLS client token (${tok_file}, $(wc -c < "${tok_file}") bytes)"
-      else
-        rm -f "${tok_file}"
-        log "WARNING: could not fetch client token from https://${addr}:${port}/-/client-token"
-      fi
-    fi
-    if [ -s "${tok_file}" ]; then
-      if ! grep -q "^ClientConfigTokenPath=" "${conf}" 2>/dev/null; then
-        echo "ClientConfigTokenPath=${tok_dir}" >> "${conf}"
-      fi
+  if [ -n "$addr" ]; then printf 'ClientConfigTokenPath=%s\n' "$tok_dir" >> "$tmp"; fi
+  cmp -s "$tmp" "$conf" || changed=1
+  chmod 0644 "$tmp" && mv -f "$tmp" "$conf" || return 1
+  if [ "$changed" = 1 ] || [ -z "$addr" ]; then
+    killall nvidia-gridd 2>/dev/null || true
+    local attempt
+    for ((attempt=0; attempt<10; attempt++)); do
+      pgrep -x nvidia-gridd >/dev/null || break
+      sleep 1
+    done
+    if pgrep -x nvidia-gridd >/dev/null; then
+      log "ERROR: nvidia-gridd did not stop; retry applying the license settings"
+      return 1
     fi
   fi
-
-  if [ "${changed}" = "1" ] && [ -n "${addr}" ]; then
-    log "Wrote /etc/nvidia/gridd.conf (ServerAddress=${addr}:${port}, FeatureType=${feat})"
+  if [ -z "$addr" ]; then
+    rm -f "$tok_file"
+    return 0
   fi
-  # gridd must be running for vGPU licensing (start/restart when config changed)
-  if [ -n "${addr}" ]; then
-    if pgrep -x nvidia-gridd >/dev/null 2>&1; then
-      [ "${changed}" = "1" ] && { killall nvidia-gridd 2>/dev/null; sleep 1; }
-    fi
-    if ! pgrep -x nvidia-gridd >/dev/null 2>&1; then
-      nvidia-gridd >/dev/null 2>&1 &
-      log "Started nvidia-gridd (license: ${addr}:${port}, FeatureType=${feat})"
-    fi
+  if ! pgrep -x nvidia-gridd >/dev/null; then
+    command -v nvidia-gridd >/dev/null || return 1
+    nvidia-gridd 9>&- || { log "ERROR: nvidia-gridd did not start"; return 1; }
   fi
+  return 0
 }
 
 nvidia_load_modules() {
-  nvidia-modprobe >/dev/null 2>&1
-  modprobe -q mdev
-  # nvidia-modprobe does not load the vfio module and Unraid has no udev rule for it
-  modprobe nvidia-vgpu-vfio 2>/dev/null
-  # MERGED driver: also bring up the host-side stack so docker/CUDA work
-  local load_uvm load_modeset load_drm
-  load_uvm="$(setting nvidia_load_uvm)";         [ "${load_uvm}" = "false" ] || modprobe nvidia-uvm 2>/dev/null
-  load_modeset="$(setting nvidia_load_modeset)"; [ "${load_modeset}" = "false" ] || modprobe nvidia-modeset 2>/dev/null
-  load_drm="$(setting nvidia_load_drm)";         [ "${load_drm}" = "false" ] || modprobe nvidia-drm 2>/dev/null
+  modprobe nvidia && modprobe mdev && modprobe nvidia-vgpu-vfio || {
+    log "ERROR: could not load the NVIDIA vGPU modules for $KERNEL_V"
+    return 1
+  }
+  nvidia-modprobe >/dev/null 2>&1 || true
+  local module key result=0
+  for module in uvm modeset drm; do
+    key="nvidia_load_${module}"
+    if [ "$(setting "$key")" != false ]; then
+      modprobe "nvidia-${module}" || result=1
+    fi
+  done
+  return "$result"
 }
 
-# true while the base nvidia.ko module is loaded
 nvidia_loaded() {
-  grep -qw '^nvidia' /proc/modules
+  [ -d /sys/module/nvidia ]
 }
 
 # Unload the whole nvidia driver stack.
 unload_nvidia_stack() {
+  modprobe -q -r nvidia_peermem 2>/dev/null
   modprobe -q -r nvidia_vgpu_vfio
   modprobe -q -r nvidia_drm
   modprobe -q -r nvidia_modeset
@@ -301,13 +232,14 @@ reload_driver() {
 }
 
 daemons_stop() {
+  killall nvidia-gridd 2>/dev/null
   killall nvidia-vgpu-mgr 2>/dev/null
   killall nvidia-vgpud 2>/dev/null
   local n=0
-  while pgrep -x nvidia-vgpu-mgr >/dev/null || pgrep -x nvidia-vgpud >/dev/null; do
+  while pgrep -x nvidia-vgpu-mgr >/dev/null || pgrep -x nvidia-vgpud >/dev/null || pgrep -x nvidia-gridd >/dev/null; do
     n=$((n + 1))
     if [ ${n} -ge 10 ]; then
-      killall -9 nvidia-vgpu-mgr nvidia-vgpud 2>/dev/null
+      killall -9 nvidia-vgpu-mgr nvidia-vgpud nvidia-gridd 2>/dev/null
       break
     fi
     sleep 1
@@ -316,26 +248,19 @@ daemons_stop() {
 }
 
 daemons_start() {
-  pgrep -x nvidia-vgpud >/dev/null || rm -f /var/run/nvidia-vgpud/*.pid 2>/dev/null
-  pgrep -x nvidia-vgpu-mgr >/dev/null || rm -f /var/run/nvidia-vgpu-mgr/*.pid 2>/dev/null
-  local unlock
-  unlock="$(setting nvidia_unlock)"
-  [ -n "${unlock}" ] || unlock="$(setting unlock)"
-  if [ "${unlock}" = "true" ] && [ -f "${UNLOCK_LIB}" ]; then
-    log "Starting nvidia-vgpud (with vgpu_unlock)"
-    LD_PRELOAD="${UNLOCK_LIB}" nvidia-vgpud
-    if ! pgrep -x nvidia-vgpu-mgr >/dev/null; then
-      log "Starting nvidia-vgpu-mgr (with vgpu_unlock)"
-      LD_PRELOAD="${UNLOCK_LIB}" nvidia-vgpu-mgr
+  local unlock daemon
+  unlock="$(setting nvidia_unlock)"; unlock="${unlock:-$(setting unlock)}"
+  for daemon in nvidia-vgpud nvidia-vgpu-mgr; do
+    pgrep -x "$daemon" >/dev/null && continue
+    rm -f "/var/run/$daemon/"*.pid 2>/dev/null
+    if [ "$unlock" = true ] && [[ "$(installed_version)" == 535.* ]] && [ -f "$UNLOCK_LIB" ]; then
+      log "Starting $daemon (vgpu_unlock)"
+      LD_PRELOAD="$UNLOCK_LIB" "$daemon" 9>&- || return 1
+    else
+      log "Starting $daemon (native)"
+      "$daemon" 9>&- || return 1
     fi
-  else
-    log "Starting nvidia-vgpud (native)"
-    nvidia-vgpud
-    if ! pgrep -x nvidia-vgpu-mgr >/dev/null; then
-      log "Starting nvidia-vgpu-mgr (native)"
-      nvidia-vgpu-mgr
-    fi
-  fi
+  done
 }
 
 wait_types() {
@@ -345,7 +270,7 @@ wait_types() {
     if [ ${t} -ge ${TYPES_TIMEOUT} ]; then
       log "ERROR: no mdev types appeared after ${TYPES_TIMEOUT}s."
       log "If nvidia-vgpud logs 'GPU not supported by vGPU' your GPU is missing from"
-      log "vgpuConfig.xml - place a 535.x XML at: ${XML_OVERRIDE}"
+      log "Check the selected driver series, loaded modules and GPU support. XML alone cannot add support to a newer driver."
       notify "No mdev types appeared - GPU may not be supported by the bundled vgpuConfig.xml" "alert"
       return 1
     fi
@@ -355,7 +280,7 @@ wait_types() {
 }
 
 device_running() {
-  [ -d "/sys/bus/mdev/devices/${1}" ]
+  [ -d "/sys/bus/mdev/devices/${1,,}" ]
 }
 
 # ============================================================================
@@ -368,23 +293,37 @@ nvidia_list_vms() {
 }
 
 # Print the VM that currently has <uuid> in its persistent config, or nothing.
+valid_uuid() {
+  [[ "$1" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]
+}
+
+# Check both persistent and active XML: --config changes do not immediately
+# appear in a running VM, and a detached live device remains busy until shutdown.
 nvidia_vm_for_uuid() {
-  local uuid="$1" vm
+  local uuid="$1" mode="${2:-any}" vm xml
+  valid_uuid "$uuid" || return 1
   while IFS= read -r vm; do
-    [ -z "$vm" ] && continue
-    if virsh dumpxml "$vm" 2>/dev/null | grep -q "uuid='${uuid}'"; then
-      echo "$vm"
-      return 0
+    [ -n "$vm" ] || continue
+    if [ "$mode" != active ]; then
+      xml="$(virsh dumpxml --inactive --domain "$vm" 2>/dev/null)"
+      if grep -Eqi "<address[[:space:]][^>]*uuid=['\"]${uuid}['\"]" <<< "$xml"; then
+        printf '%s\n' "$vm"; return 0
+      fi
+    fi
+    # virsh list without --all returns all active domains, including paused VMs.
+    if virsh list --name 2>/dev/null | grep -Fxq -- "$vm"; then
+      xml="$(virsh dumpxml --domain "$vm" 2>/dev/null)"
+      if grep -Eqi "<address[[:space:]][^>]*uuid=['\"]${uuid}['\"]" <<< "$xml"; then
+        printf '%s\n' "$vm"; return 0
+      fi
     fi
   done < <(nvidia_list_vms)
   return 1
 }
 
-# Attach a running vGPU mdev to a VM's persistent config. The change takes
-# effect on the VM's next cold start (mdev cannot be hot-plugged).
 nvidia_attach_vm() {
   local uuid="$1" vm="$2" tmp state out existing
-  if [ -z "$uuid" ] || [ -z "$vm" ]; then
+  if ! valid_uuid "$uuid" || [ -z "$vm" ] || [[ "$vm" == *$'\n'* ]]; then
     echo "ERROR: usage: nvidia_attach_vm <uuid> <vm-name>"
     return 1
   fi
@@ -397,7 +336,7 @@ nvidia_attach_vm() {
     echo "ERROR: vGPU $uuid is already attached to VM \"$existing\" - detach it first."
     return 1
   fi
-  tmp="$(mktemp)"
+  tmp="$(mktemp)" || return 1
   cat > "$tmp" <<EOF
 <hostdev mode='subsystem' type='mdev' managed='no' model='vfio-pci'>
   <source>
@@ -405,16 +344,16 @@ nvidia_attach_vm() {
   </source>
 </hostdev>
 EOF
-  out="$(virsh attach-device "$vm" "$tmp" --config 2>&1)" || {
+  out="$(virsh attach-device --domain "$vm" --file "$tmp" --config 2>&1)" || {
     echo "ERROR: failed to attach vGPU $uuid to VM \"$vm\": $out"
     rm -f "$tmp"
     return 1
   }
   rm -f "$tmp"
-  state="$(virsh domstate "$vm" 2>/dev/null)"
+  state="$(virsh domstate --domain "$vm" 2>/dev/null)"
   log "Attached vGPU $uuid to VM $vm (persistent config)"
   echo "Attached vGPU $uuid to VM \"$vm\"."
-  if [ "$state" = "running" ]; then
+  if [ "$state" != "shut off" ]; then
     echo "NOTE: VM \"$vm\" is running. Shut it down and start it again for the vGPU to appear."
   else
     echo "Start VM \"$vm\" to use the vGPU."
@@ -425,11 +364,11 @@ EOF
 # Detach a vGPU mdev from a VM's persistent config.
 nvidia_detach_vm() {
   local uuid="$1" vm="$2" tmp state out
-  if [ -z "$uuid" ] || [ -z "$vm" ]; then
+  if ! valid_uuid "$uuid" || [ -z "$vm" ] || [[ "$vm" == *$'\n'* ]]; then
     echo "ERROR: usage: nvidia_detach_vm <uuid> <vm-name>"
     return 1
   fi
-  tmp="$(mktemp)"
+  tmp="$(mktemp)" || return 1
   cat > "$tmp" <<EOF
 <hostdev mode='subsystem' type='mdev' managed='no' model='vfio-pci'>
   <source>
@@ -437,19 +376,73 @@ nvidia_detach_vm() {
   </source>
 </hostdev>
 EOF
-  out="$(virsh detach-device "$vm" "$tmp" --config 2>&1)" || {
+  out="$(virsh detach-device --domain "$vm" --file "$tmp" --config 2>&1)" || {
     echo "ERROR: failed to detach vGPU $uuid from VM \"$vm\": $out"
     rm -f "$tmp"
     return 1
   }
   rm -f "$tmp"
-  state="$(virsh domstate "$vm" 2>/dev/null)"
+  state="$(virsh domstate --domain "$vm" 2>/dev/null)"
   log "Detached vGPU $uuid from VM $vm (persistent config)"
   echo "Detached vGPU $uuid from VM \"$vm\"."
-  if [ "$state" = "running" ]; then
+  if [ "$state" != "shut off" ]; then
     echo "NOTE: VM \"$vm\" is running. Shut it down and start it again to fully release the vGPU."
   fi
   return 0
+}
+
+device_definition() {
+  valid_uuid "$1" || return 1
+  awk -F '|' -v uuid="$1" 'tolower($1) == tolower(uuid) {print; exit}' "$DEVCFG" 2>/dev/null
+}
+
+nvidia_add_device() {
+  local uuid="${1,,}" pci="${2,,}" mtype="$3" available tmp
+  valid_uuid "$uuid" && [[ "$pci" =~ ^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]$ ]] &&
+    [[ "$mtype" =~ ^nvidia-[0-9]+$ ]] || { log "ERROR: invalid vGPU UUID, PCI address or profile"; return 1; }
+  [ -z "$(device_definition "$uuid")" ] && ! device_running "$uuid" || { log "ERROR: vGPU UUID already exists"; return 1; }
+  available="$(cat "/sys/bus/pci/devices/$pci/mdev_supported_types/$mtype/available_instances" 2>/dev/null)"
+  [[ "$available" =~ ^[0-9]+$ ]] && [ "$available" -gt 0 ] || { log "ERROR: profile is unavailable on that GPU"; return 1; }
+  mkdir -p "$PLGCFG" || return 1
+  tmp="$(mktemp "$PLGCFG/.devices.XXXXXX")" || return 1
+  if [ -f "$DEVCFG" ]; then cat "$DEVCFG" > "$tmp"; fi
+  printf '%s|%s|%s\n' "$uuid" "$pci" "$mtype" >> "$tmp"
+  if ! mdevctl define -u "$uuid" -p "$pci" --type "$mtype"; then rm -f "$tmp"; return 1; fi
+  if ! mv -f "$tmp" "$DEVCFG"; then mdevctl undefine -u "$uuid"; rm -f "$tmp"; return 1; fi
+  if ! mdevctl start -u "$uuid"; then log "ERROR: vGPU saved, but it could not start. Check the driver log and retry Start."; return 1; fi
+  log "vGPU $uuid saved and started"
+}
+
+nvidia_start_device() {
+  local row uuid pci mtype
+  row="$(device_definition "$1")"
+  [ -n "$row" ] || { log "ERROR: unknown vGPU UUID"; return 1; }
+  IFS='|' read -r uuid pci mtype <<< "$row"
+  device_running "$uuid" && return 0
+  mdevctl define -u "$uuid" -p "$pci" --type "$mtype" || return 1
+  mdevctl start -u "$uuid"
+}
+
+nvidia_stop_device() {
+  local uuid="$1" owner
+  valid_uuid "$uuid" && [ -n "$(device_definition "$uuid")" ] || { log "ERROR: unknown vGPU UUID"; return 1; }
+  owner="$(nvidia_vm_for_uuid "$uuid" active)"
+  [ -z "$owner" ] || { log "ERROR: vGPU is still in use by VM $owner. Shut it down first."; return 1; }
+  if device_running "$uuid"; then mdevctl stop -u "$uuid" || return 1; fi
+  return 0
+}
+
+nvidia_remove_device() {
+  local uuid="$1" owner tmp
+  valid_uuid "$uuid" && [ -n "$(device_definition "$uuid")" ] || { log "ERROR: unknown vGPU UUID"; return 1; }
+  owner="$(nvidia_vm_for_uuid "$uuid")"
+  [ -z "$owner" ] || { log "ERROR: vGPU is attached to VM $owner. Detach it and shut down the VM before removing it."; return 1; }
+  nvidia_stop_device "$uuid" || return 1
+  mdevctl undefine -u "$uuid" || return 1
+  tmp="$(mktemp "$PLGCFG/.devices.XXXXXX")" || return 1
+  if awk -F '|' -v uuid="$uuid" 'tolower($1) != tolower(uuid)' "$DEVCFG" > "$tmp"; then
+    mv -f "$tmp" "$DEVCFG"
+  else rm -f "$tmp"; return 1; fi
 }
 
 nvidia_apply_devices() {
@@ -457,6 +450,7 @@ nvidia_apply_devices() {
   local uuid pci mtype rc=0
   while IFS='|' read -r uuid pci mtype; do
     case "${uuid}" in ''|\#*) continue ;; esac
+    valid_uuid "$uuid" && [[ "$pci" =~ ^[0-9a-fA-F]{4}:[0-9a-fA-F]{2}:[0-9a-fA-F]{2}\.[0-7]$ ]] && [[ "$mtype" =~ ^nvidia-[0-9]+$ ]] || { rc=1; continue; }
     if device_running "${uuid}"; then
       continue
     fi
@@ -472,19 +466,30 @@ nvidia_apply_devices() {
 }
 
 nvidia_stop_devices() {
-  [ -s "${DEVCFG}" ] || return 0
-  local uuid pci mtype
+  [ -s "$DEVCFG" ] || return 0
+  local uuid pci mtype owner result=0
+  # Preflight the whole set before stopping any device.
   while IFS='|' read -r uuid pci mtype; do
-    case "${uuid}" in ''|\#*) continue ;; esac
-    if device_running "${uuid}"; then
-      log "Stopping vGPU ${uuid}"
-      mdevctl stop -u "${uuid}" 2>/dev/null
+    case "$uuid" in ''|\#*) continue ;; esac
+    valid_uuid "$uuid" || continue
+    owner="$(nvidia_vm_for_uuid "$uuid" active)"
+    if [ -n "$owner" ]; then
+      log "ERROR: vGPU $uuid is still in use by VM $owner. Shut down that VM first."
+      return 1
     fi
-  done < "${DEVCFG}"
+  done < "$DEVCFG"
+  while IFS='|' read -r uuid pci mtype; do
+    case "$uuid" in ''|\#*) continue ;; esac
+    valid_uuid "$uuid" || continue
+    if device_running "$uuid"; then
+      mdevctl stop -u "$uuid" || result=1
+    fi
+  done < "$DEVCFG"
+  return "$result"
 }
 
-# configure docker nvidia runtime (MERGED driver: host containers can use the GPU)
 nvidia_setup_docker() {
+  mkdir -p /etc/docker || return 1
   if [ -x /usr/bin/nvidia-ctk ]; then
     /usr/bin/nvidia-ctk runtime configure --runtime=docker >/dev/null 2>&1 \
       && log "Docker nvidia runtime configured" \
@@ -492,7 +497,7 @@ nvidia_setup_docker() {
   fi
   # merge the nvidia runtime into an existing daemon.json - NEVER overwrite the
   # whole file (it may hold the user's registry-mirrors, data-root, ...)
-  if [ -f /etc/docker/daemon.json ] && ! grep -q '"nvidia"' /etc/docker/daemon.json 2>/dev/null; then
+  if [ -f /etc/docker/daemon.json ] && ! jq -e '.runtimes.nvidia.path | type == "string"' /etc/docker/daemon.json >/dev/null 2>&1; then
     if command -v jq >/dev/null 2>&1; then
       local tmp
       tmp="$(mktemp)"
@@ -522,79 +527,80 @@ EOF
   fi
 }
 
+install_driver_package() {
+  local source="$1" pkg="$2" name old target key
+  name="${pkg##*/}"
+  package_matches "$name" "$source" "$KERNEL_V" && md5_ok "$pkg" || {
+    log "ERROR: driver package has the wrong kernel/name or failed its checksum: $name"
+    return 1
+  }
+  tar -tJf "$pkg" >/dev/null 2>&1 || { log "ERROR: invalid package archive: $name"; return 1; }
+  old="$(installed_package "$source")"
+  target="$pkg"
+  [ -z "$old" ] || [ "$old" = "$name" ] || target="${old%.txz}%${pkg}"
+  log "Installing driver package $name"
+  /sbin/upgradepkg --install-new --reinstall "$target" || {
+    log "ERROR: package installation failed: $name"; return 1;
+  }
+  depmod -a "$KERNEL_V" || return 1
+  case "$source" in nvidia) key=nvidia_package ;; i915) key=intel_package ;; esac
+  set_setting "$key" "$name"
+}
+
 nvidia_install_pkg() {
-  local pkg="$1" newname db p
-  newname="$(basename "${pkg%.txz}")"
-  for db in /var/log/packages /var/lib/pkgtools/packages; do
-    [ -d "${db}" ] || continue
-    for p in "${db}"/nvidia-[0-9]*; do
-      [ -e "${p}" ] || continue
-      [ "$(basename "${p}")" = "${newname}" ] && continue
-      removepkg "$(basename "${p}")" >/dev/null 2>&1
-    done
-  done
-  log "Installing driver package $(basename "${pkg}")"
-  /sbin/upgradepkg --install-new --reinstall "${pkg}" >/dev/null
-  depmod -a
+  install_driver_package nvidia "$1"
 }
 
 nvidia_do_start() {
-  if [ -z "$(installed_version)" ]; then
-    log "ERROR: no Nvidia vGPU driver installed for kernel ${KERNEL_V}"
-    return 1
+  [ -n "$(installed_version)" ] || { log "ERROR: no NVIDIA module installed for $KERNEL_V"; return 1; }
+  if [ -z "$(nvidia_gpu_ids)" ]; then
+    log "NVIDIA package installed; no NVIDIA GPU detected. It will activate when hardware is present."
+    return 0
   fi
-  nvidia_setup_config
-  nvidia_apply_license
-  nvidia_load_modules
-  daemons_start
-  if wait_types; then
-    nvidia_apply_devices
-  else
-    return 1
+  nvidia_setup_config || return 1
+  nvidia_load_modules || return 1
+  nvidia_setup_docker || return 1
+  nvidia_apply_license || log "WARNING: license settings could not be applied; check the license server"
+  if ! pgrep -x nvidia-vgpud >/dev/null || ! pgrep -x nvidia-vgpu-mgr >/dev/null; then
+    daemons_start || return 1
   fi
+  wait_types && nvidia_apply_devices
 }
 
-# live driver reload: only possible while no VM holds a vGPU
 nvidia_do_update() {
-  local pkg new
-  pkg="$(pkg_file)"
-  if [ -z "${pkg}" ]; then
-    log "ERROR: no downloaded nvidia package found for kernel ${KERNEL_V}"
-    return 1
-  fi
-  new="$(pkg_version)"
-  if [ "$(loaded_version)" = "${new}" ] && [ "$(installed_version)" = "${new}" ]; then
-    log "Nvidia driver v${new} is already installed and loaded"
+  local pkg="${1:-$(pkg_file)}" new
+  package_matches "${pkg##*/}" nvidia "$KERNEL_V" && md5_ok "$pkg" || { log "ERROR: no verified NVIDIA package for $KERNEL_V"; return 1; }
+  new="${pkg##*/}"
+  if [ "$(installed_package nvidia)" = "$new" ] && [ "$(loaded_version)" = "$(installed_version)" ]; then
+    log "NVIDIA package $new is already installed and loaded"
     nvidia_do_start
     return $?
   fi
-  log "Live-installing nvidia driver v${new} (currently loaded: $(loaded_version || echo none))"
-  nvidia_stop_devices
+  nvidia_stop_devices || return 1
   daemons_stop
   if ! unload_nvidia_stack; then
-    log "ERROR: cannot unload the nvidia module (a VM is probably using a vGPU)."
-    log "The new driver will be installed on the next reboot."
-    notify "New nvidia driver downloaded but the old driver is in use. Stop VMs or reboot." "alert"
-    nvidia_do_start
+    log "ERROR: NVIDIA is in use. Stop GPU VMs/containers and retry the update."
+    nvidia_do_start || true
     return 1
   fi
-  nvidia_install_pkg "${pkg}"
-  if nvidia_do_start; then
-    log "Nvidia driver v${new} installed and running - no reboot needed"
-    notify "Nvidia vGPU driver v${new} installed and running - no reboot needed"
-  else
+  if ! nvidia_install_pkg "$pkg"; then
+    nvidia_do_start || true
     return 1
   fi
+  nvidia_do_start || return 1
+  log "NVIDIA package $new installed and running"
 }
 
-# ============================================================================
-# Intel i915 SR-IOV section
-# ============================================================================
-
-# find the Intel iGPU physical function (PF) PCI address, e.g. 0000:00:02.0
 intel_pf_pci() {
-  lspci -D 2>/dev/null | grep -E "VGA compatible controller|Display controller" \
-    | grep -i "intel" | awk '{print $1}' | grep "\.0" | sort -r | tail -1
+  local dev
+  for dev in /sys/bus/pci/devices/*; do
+    [ "$(cat "$dev/vendor" 2>/dev/null)" = 0x8086 ] || continue
+    [ ! -L "$dev/physfn" ] || continue
+    case "$(cat "$dev/class" 2>/dev/null)" in
+      0x03*) printf '%s\n' "${dev##*/}"; return 0 ;;
+    esac
+  done
+  return 1
 }
 
 intel_has_gpu() {
@@ -608,14 +614,18 @@ intel_sriov_supported() {
 }
 
 intel_vfs_pci() {
-  lspci -D 2>/dev/null | grep -E "VGA compatible controller|Display controller" \
-    | grep -i "intel" | awk '{print $1}' | grep -v "\.0" | sort
+  local pf vf
+  pf="$(intel_pf_pci)" || return 1
+  for vf in "/sys/bus/pci/devices/$pf"/virtfn*; do
+    [ -L "$vf" ] || continue
+    basename "$(readlink -f "$vf")"
+  done | sort -V
 }
 
 intel_sysfs_base() {
   local pf
-  pf="$(intel_pf_pci)"
-  [ -n "${pf}" ] && echo "/sys/devices/pci${pf%:*}/${pf}"
+  pf="$(intel_pf_pci)" || return 1
+  printf '/sys/bus/pci/devices/%s\n' "$pf"
 }
 
 intel_vfs_num() {
@@ -631,32 +641,55 @@ intel_vfs_total() {
 }
 
 # write VF count to sysfs (hot-plug, no reboot needed if module already has VFs enabled)
+intel_vfs_idle() {
+  local vf group node
+  command -v fuser >/dev/null || { log "ERROR: fuser is required to check whether Intel VFs are in use"; return 1; }
+  for vf in $(intel_vfs_pci); do
+    group="$(readlink -f "/sys/bus/pci/devices/$vf/iommu_group")"
+    if [ -n "$group" ] && fuser -s "/dev/vfio/${group##*/}" 2>/dev/null; then
+      log "ERROR: Intel VF $vf is in use. Shut down its VM first."
+      return 1
+    fi
+    for node in "/sys/bus/pci/devices/$vf/vfio-dev"/*; do
+      [ -e "$node" ] || continue
+      if fuser -s "/dev/vfio/devices/${node##*/}" 2>/dev/null; then
+        log "ERROR: Intel VF $vf is in use. Shut down its VM first."
+        return 1
+      fi
+    done
+  done
+}
+
 intel_set_vfs() {
-  local num="$1" base
-  base="$(intel_sysfs_base)"
-  [ -n "${base}" ] || { log "ERROR: no Intel GPU found"; return 1; }
-  if [ ! -w "${base}/sriov_numvfs" ]; then
-    log "ERROR: ${base}/sriov_numvfs not writable - is i915 loaded with SR-IOV support?"
-    log "Check the syslinux append line contains i915.enable_guc=3 i915.max_vfs=N"
-    return 1
+  local num="$1" persist="${2:-save}" base total current
+  [[ "$num" =~ ^[0-9]{1,2}$ ]] || { log "ERROR: invalid VF count"; return 1; }
+  num="$((10#$num))"
+  base="$(intel_sysfs_base)" || { log "ERROR: no Intel GPU found"; return 1; }
+  [ -w "$base/sriov_numvfs" ] || { log "ERROR: i915 is not exposing writable SR-IOV controls"; return 1; }
+  total="$(cat "$base/sriov_totalvfs")"
+  [[ "$total" =~ ^[0-9]+$ ]] && [ "$num" -le "$total" ] || { log "ERROR: VF count exceeds hardware limit ($total)"; return 1; }
+  current="$(cat "$base/sriov_numvfs")"
+  if [ "$current" != "$num" ]; then
+    intel_vfs_idle || return 1
+    if [ "$current" != 0 ]; then
+      echo 0 > "$base/sriov_numvfs" || { log "ERROR: could not disable existing VFs"; return 1; }
+    fi
+    if ! echo "$num" > "$base/sriov_numvfs"; then
+      log "ERROR: could not set VF count to $num"
+      echo "$current" > "$base/sriov_numvfs" 2>/dev/null || true
+      return 1
+    fi
   fi
-  log "Setting VF count to ${num} on ${base}"
-  echo 0 > "${base}/sriov_numvfs" 2>/dev/null
-  sleep 2
-  echo "${num}" > "${base}/sriov_numvfs" 2>/dev/null || {
-    log "ERROR: failed to write sriov_numvfs=${num}"
-    return 1
-  }
-  set_setting intel_vf_number "${num}"
-  intel_bind_all_vfio
+  intel_bind_all_vfio || return 1
+  [ "$persist" != save ] || set_setting intel_vf_number "$num"
   return 0
 }
 
-# bind one PCI device to vfio-pci
 intel_bind_vfio() {
   local pci="$1" dsp dpath dbdf curr
-  dsp="/sys/devices/pci${pci%:*}/${pci}"
-  [ -d "${dsp}" ] || { log "ERROR: ${pci} not found"; return 1; }
+  dsp="/sys/bus/pci/devices/${pci}"
+  [ -d "${dsp}" ] && [ -L "${dsp}/physfn" ] || { log "ERROR: ${pci} is not an Intel VF"; return 1; }
+  [ "$(basename "$(readlink -f "${dsp}/physfn")")" = "$(intel_pf_pci)" ] || return 1
   dpath="${dsp}/driver"
   dbdf="${dsp##*/}"
 
@@ -664,7 +697,7 @@ intel_bind_vfio() {
   if ! lsmod | grep -qw vfio_pci; then
     modprobe vfio_pci 2>/dev/null || { log "ERROR: cannot load vfio-pci"; return 1; }
   fi
-  echo "vfio-pci" > "${dsp}/driver_override" 2>/dev/null
+  echo "vfio-pci" > "${dsp}/driver_override" 2>/dev/null || return 1
   if [ -d "${dpath}" ]; then
     curr="$(readlink "${dpath}")"
     curr="${curr##*/}"
@@ -673,7 +706,7 @@ intel_bind_vfio() {
       return 0
     fi
     log "Unbinding ${dbdf} from ${curr}"
-    echo "${dbdf}" > "${dpath}/unbind" 2>/dev/null
+    echo "${dbdf}" > "${dpath}/unbind" 2>/dev/null || return 1
   fi
   # bind explicitly instead of drivers_probe (which would probe every
   # driverless PCI device on the bus as a side effect)
@@ -686,27 +719,18 @@ intel_bind_vfio() {
 }
 
 intel_bind_all_vfio() {
-  local vf
+  local vf result=0
   for vf in $(intel_vfs_pci); do
-    intel_bind_vfio "${vf}"
+    intel_bind_vfio "$vf" || result=1
   done
+  return "$result"
 }
 
-# load the i915 module with SR-IOV params
-# neutralize a manually-added "modprobe i915" in /boot/config/go (common from
-# tutorials) so it stops loading the stock i915 before emhttp starts. The plugin
-# now owns i915 loading via the emhttp "started" event. The modprobe target is
-# rewritten (not removed) so the go file's shell syntax stays intact.
-intel_cleanup_go() {
-  local go="/boot/config/go"
-  [ -f "${go}" ] || return 0
-  if grep -qE 'modprobe i915([[:space:]]|$)' "${go}"; then
-    [ -f "${go}.vgpu.bak" ] || cp -a "${go}" "${go}.vgpu.bak"
-    sed -i 's|/sbin/modprobe i915\b|/sbin/modprobe i915_disabled_by_vgpu_plugin|g' "${go}"
-    sed -i 's|modprobe i915\b|modprobe i915_disabled_by_vgpu_plugin|g' "${go}"
-    log "Neutralized manual modprobe i915 in /boot/config/go (backup: ${go}.vgpu.bak)"
-    notify "Detected manual i915 loading in /boot/config/go - disabled it so the plugin manages i915 SR-IOV"
-  fi
+intel_restore_go() {
+  local go=/boot/config/go
+  [ -f "$go" ] || return 0
+  # Undo only the exact marker inserted by older versions of this plugin.
+  sed -i 's/\bmodprobe i915_disabled_by_vgpu_plugin\b/modprobe i915/g' "$go"
 }
 
 intel_load_module() {
@@ -714,16 +738,14 @@ intel_load_module() {
   max_vfs="$(setting intel_vf_number)"
   [ -n "${max_vfs}" ] || max_vfs="7"
 
-  # blacklist the built-in i915 (so boot never auto-loads the stock driver) and
-  # xe (so the i915-sriov driver owns the GPU). The plugin loads i915 manually
-  # with the SR-IOV parameters below.
-  mkdir -p /boot/config/modprobe.d
-  if ! grep -q "^blacklist i915" /boot/config/modprobe.d/i915.conf 2>/dev/null; then
-    echo "blacklist i915" >> /boot/config/modprobe.d/i915.conf
-  fi
-  if ! grep -q "^blacklist xe" /boot/config/modprobe.d/i915.conf 2>/dev/null; then
-    echo "blacklist xe" >> /boot/config/modprobe.d/i915.conf
-  fi
+  mkdir -p /boot/config/modprobe.d /etc/modprobe.d
+  cat > /boot/config/modprobe.d/my-unraid-vgpu-manager-i915.conf <<EOF
+# Managed by my-unraid-vgpu-manager
+blacklist i915
+blacklist xe
+options i915 enable_guc=3 max_vfs=${max_vfs}
+EOF
+  cp /boot/config/modprobe.d/my-unraid-vgpu-manager-i915.conf /etc/modprobe.d/my-unraid-vgpu-manager-i915.conf || return 1
 
   # the SR-IOV i915 build depends on the compat shim for intel_drm_shim_* symbols;
   # it MUST be loaded before i915 or modprobe fails with "Unknown symbol".
@@ -736,7 +758,7 @@ intel_load_module() {
   # build lacks the max_vfs parameter); the stock build is unloaded first so
   # the replacement can take over the GPU.
   if lsmod | grep -q '^i915 '; then
-    if modinfo -p i915 2>/dev/null | grep -q '^max_vfs:'; then
+    if [ -f /sys/module/i915/parameters/max_vfs ]; then
       log "i915 (SR-IOV) already loaded"
       return 0
     fi
@@ -757,71 +779,40 @@ intel_load_module() {
   local cur total
   cur="$(intel_vfs_num)"; total="$(intel_vfs_total)"
   if [ -n "${total}" ] && [ -n "${max_vfs}" ] && [ "${cur:-0}" != "${max_vfs}" ]; then
-    intel_set_vfs "${max_vfs}"
+    intel_set_vfs "${max_vfs}" || return 1
   fi
   return 0
 }
 
 intel_install_pkg() {
-  local pkg="$1" newname db p
-  newname="$(basename "${pkg%.txz}")"
-  for db in /var/log/packages /var/lib/pkgtools/packages; do
-    [ -d "${db}" ] || continue
-    for p in "${db}"/i915-sriov-*; do
-      [ -e "${p}" ] || continue
-      [ "$(basename "${p}")" = "${newname}" ] && continue
-      removepkg "$(basename "${p}")" >/dev/null 2>&1
-    done
-  done
-  log "Installing i915 SR-IOV package $(basename "${pkg}")"
-  /sbin/upgradepkg --install-new --reinstall "${pkg}" >/dev/null
-  depmod -a
+  install_driver_package i915 "$1"
 }
 
-# boot / plugin-update entry point for the Intel side
 intel_do_ensure() {
-  if ! intel_has_gpu; then
-    log "No Intel GPU detected - skipping i915 SR-IOV setup"
-    return 0
-  fi
-  intel_cleanup_go
-  local pkg
-  pkg="$(i915_pkg_file)"
-  if [ -z "$(i915_installed_version)" ]; then
-    if [ -z "${pkg}" ]; then
-      log "ERROR: no i915 package available for kernel ${KERNEL_V}"
-      return 1
-    fi
-    intel_install_pkg "${pkg}"
-  fi
-  intel_load_module
-  if [ -n "$(intel_vfs_total)" ]; then
-    local vfnum
-    vfnum="$(setting intel_vf_number)"
-    [ -n "${vfnum}" ] || vfnum="7"
-    intel_set_vfs "${vfnum}"
-  fi
-  return 0
+  intel_has_gpu || { log "No Intel GPU detected; keeping the installed package for later use"; return 0; }
+  intel_load_module || return 1
+  local vfnum
+  vfnum="$(setting intel_vf_number)"
+  intel_set_vfs "${vfnum:-7}"
 }
-
-# ============================================================================
-# combined (unified) entry points
-# ============================================================================
 
 do_start() {
-  # NVIDIA
-  if [ "$(setting nvidia_installed)" = "true" ] && [ -n "$(installed_version)" ]; then
-    nvidia_do_start
-  fi
-  # Intel
-  if [ "$(setting intel_installed)" = "true" ] && intel_has_gpu; then
-    intel_do_ensure
-  fi
+  local result=0
+  if [ "$(setting nvidia_installed)" = true ]; then nvidia_do_start || result=1; fi
+  if [ "$(setting intel_installed)" = true ]; then intel_do_ensure || result=1; fi
+  return "$result"
 }
 
 do_stop() {
-  nvidia_stop_devices
+  nvidia_stop_devices || return 1
   daemons_stop
+}
+
+do_restart() {
+  do_stop || return 1
+  if ! reload_driver; then nvidia_do_start || true; return 1; fi
+  # Restarting NVIDIA services must not tear down Intel VFs.
+  nvidia_do_start
 }
 
 do_update() {
@@ -830,7 +821,7 @@ do_update() {
     nvidia_do_update || nrc=1
   fi
   if [ "$(setting intel_installed)" = "true" ] && intel_has_gpu && [ -n "$(i915_pkg_file)" ]; then
-    intel_do_ensure || irc=1
+    intel_do_install || irc=1
   fi
   [ ${nrc} -eq 0 ] && [ ${irc} -eq 0 ]
 }
@@ -838,128 +829,95 @@ do_update() {
 # --- on-demand install / uninstall (called from the plugin page) ---
 
 nvidia_do_install() {
-  local pkg
-  pkg="$(pkg_file)"
-  if [ -z "${pkg}" ]; then
-    log "ERROR: no nvidia driver package downloaded for kernel ${KERNEL_V}"
-    notify "No NVIDIA driver package available - check the download log" "alert"
-    return 1
-  fi
-  log "Installing NVIDIA vGPU driver $(basename "${pkg}")"
+  local pkg="${1:-$(pkg_file)}"
+  package_matches "${pkg##*/}" nvidia "$KERNEL_V" && md5_ok "$pkg" || { log "ERROR: no verified NVIDIA package for $KERNEL_V"; return 1; }
   if [ -n "$(loaded_version)" ]; then
-    # stop the running stack first so the module can be replaced
-    nvidia_stop_devices
-    daemons_stop
-    unload_nvidia_stack || log "WARNING: nvidia module in use - will apply on next boot"
+    nvidia_do_update "$pkg" || return 1
+  else
+    nvidia_install_pkg "$pkg" || return 1
+    # The flag records opt-in even if hardware activation subsequently fails.
+    set_setting nvidia_installed true || return 1
+    nvidia_do_start || return 1
   fi
-  nvidia_install_pkg "${pkg}"
   set_setting nvidia_installed true
-  nvidia_setup_config
-  nvidia_apply_license
-  nvidia_load_modules
-  daemons_start
-  if wait_types; then
-    nvidia_apply_devices
-    nvidia_setup_docker
-    notify "NVIDIA vGPU driver installed and running"
-    log "NVIDIA vGPU driver installed and running"
-    return 0
-  fi
-  return 1
 }
 
 nvidia_do_uninstall() {
-  log "Uninstalling NVIDIA vGPU driver"
-  nvidia_stop_devices
+  nvidia_stop_devices || return 1
   daemons_stop
-  unload_nvidia_stack || log "WARNING: nvidia module in use - will unload on next boot"
-  local db p
-  for db in /var/log/packages /var/lib/pkgtools/packages; do
-    [ -d "${db}" ] || continue
-    for p in "${db}"/nvidia-[0-9]*; do
-      [ -e "${p}" ] && removepkg "$(basename "${p}")" >/dev/null 2>&1
-    done
-  done
-  set_setting nvidia_installed false
-  notify "NVIDIA vGPU driver uninstalled (reboot to fully unload)"
-  log "NVIDIA vGPU driver uninstalled"
+  if ! unload_nvidia_stack; then
+    log "ERROR: NVIDIA is in use. Stop GPU VMs/containers before uninstalling."
+    nvidia_do_start || true
+    return 1
+  fi
+  local pkg
+  pkg="$(installed_package nvidia)"
+  if [ -n "$pkg" ]; then removepkg "${pkg%.txz}" || return 1; fi
+  depmod -a "$KERNEL_V" || return 1
+  set_setting nvidia_installed false || return 1
+  log "NVIDIA vGPU driver disabled and uninstalled"
+}
+
+intel_unload_stack() {
+  if [ -n "$(intel_vfs_total)" ]; then intel_set_vfs 0 nosave || return 1; fi
+  if [ -d /sys/module/i915 ]; then
+    modprobe -r i915 || { log "ERROR: Intel GPU is in use; stop its VMs/containers before changing the driver"; return 1; }
+  fi
+  modprobe -r intel_sriov_compat 2>/dev/null || true
 }
 
 intel_do_install() {
-  local pkg
-  pkg="$(i915_pkg_file)"
-  if [ -z "${pkg}" ]; then
-    log "ERROR: no i915 SR-IOV package downloaded for kernel ${KERNEL_V}"
-    notify "No i915 SR-IOV package available - check the download log" "alert"
-    return 1
+  local pkg="${1:-$(i915_pkg_file)}"
+  package_matches "${pkg##*/}" i915 "$KERNEL_V" && md5_ok "$pkg" || { log "ERROR: no verified Intel package for $KERNEL_V"; return 1; }
+  if [ "$(installed_package i915)" != "${pkg##*/}" ]; then
+    intel_unload_stack || return 1
+    intel_install_pkg "$pkg" || return 1
   fi
-  log "Installing i915 SR-IOV driver $(basename "${pkg}")"
-  intel_install_pkg "${pkg}"
-  set_setting intel_installed true
-  if intel_has_gpu; then
-    intel_load_module
-    local vfnum
-    vfnum="$(setting intel_vf_number)"
-    [ -n "${vfnum}" ] || vfnum="7"
-    intel_set_vfs "${vfnum}"
-    notify "i915 SR-IOV driver installed, VFs configured"
-  else
-    notify "i915 SR-IOV driver installed (no Intel GPU detected - will activate at boot)"
-  fi
-  log "i915 SR-IOV driver installed"
+  set_setting intel_installed true || return 1
+  intel_do_ensure
 }
 
 intel_do_uninstall() {
-  log "Uninstalling i915 SR-IOV driver"
-  # drop VFs first
-  local base
-  base="$(intel_sysfs_base)"
-  [ -n "${base}" ] && [ -w "${base}/sriov_numvfs" ] && echo 0 > "${base}/sriov_numvfs" 2>/dev/null
-  local db p
-  for db in /var/log/packages /var/lib/pkgtools/packages; do
-    [ -d "${db}" ] || continue
-    for p in "${db}"/i915-sriov-*; do
-      [ -e "${p}" ] && removepkg "$(basename "${p}")" >/dev/null 2>&1
-    done
-  done
-  set_setting intel_installed false
-  notify "i915 SR-IOV driver uninstalled (reboot to fully unload)"
-  log "i915 SR-IOV driver uninstalled"
+  intel_unload_stack || return 1
+  local pkg
+  pkg="$(installed_package i915)"
+  if [ -n "$pkg" ]; then removepkg "${pkg%.txz}" || return 1; fi
+  rm -f /boot/config/modprobe.d/my-unraid-vgpu-manager-i915.conf /etc/modprobe.d/my-unraid-vgpu-manager-i915.conf
+  intel_restore_go || return 1
+  depmod -a "$KERNEL_V" || return 1
+  set_setting intel_installed false || return 1
+  log "Intel i915 SR-IOV driver disabled and uninstalled"
 }
 
-# boot / plugin-update entry point - only starts stacks that were explicitly
-# installed from the plugin page; never installs anything on its own.
-do_ensure() {
-  # --- NVIDIA (only if the user opted in) ---
-  if [ "$(setting nvidia_installed)" = "true" ] && [ -n "$(installed_version)" ]; then
-    if [ -z "$(loaded_version)" ]; then
-      nvidia_do_start
-    else
-      local pkg
-      pkg="$(pkg_file)"
-      if [ -n "${pkg}" ] && [ "$(loaded_version)" != "$(pkg_version)" ]; then
-        nvidia_do_update
-      else
-        nvidia_setup_config
-        nvidia_apply_license
-        nvidia_load_modules
-        nvidia_setup_docker
-        if ! pgrep -x nvidia-vgpu-mgr >/dev/null || ! types_present; then
-          daemons_start
-        fi
-        if wait_types; then
-          nvidia_apply_devices
-        else
-          return 1
-        fi
-      fi
-    fi
+do_restore() {
+  local pkg series result=0 want
+  # Unraid rebuilds its root filesystem at boot. Restore only opted-in drivers
+  # from verified packages for the running kernel, without network access.
+  if [ "$(setting nvidia_installed)" = true ] && [ -z "$(installed_package nvidia)" ]; then
+    series="$(nvidia_active_series)"
+    want="$(setting driver_version)"; want="${want:-latest}"
+    pkg="$(find_package nvidia "$KERNEL_V" "$series" "$want")"
+    if [ -n "$pkg" ]; then nvidia_install_pkg "$pkg" || result=1
+    else log "ERROR: no verified NVIDIA $series.x package for $KERNEL_V; prepare it before upgrading Unraid"; result=1; fi
   fi
+  if [ "$(setting intel_installed)" = true ] && [ -z "$(installed_package i915)" ]; then
+    pkg="$(find_package i915 "$KERNEL_V")"
+    if [ -n "$pkg" ]; then intel_install_pkg "$pkg" || result=1
+    else log "ERROR: no verified Intel package for $KERNEL_V; prepare it before upgrading Unraid"; result=1; fi
+  fi
+  return "$result"
+}
 
-  # --- Intel (only if the user opted in) ---
-  if [ "$(setting intel_installed)" = "true" ]; then
-    intel_do_ensure
+do_ensure() {
+  local result=0
+  do_restore || result=1
+  if [ "$(setting nvidia_installed)" = true ] && [ -n "$(installed_package nvidia)" ]; then
+    nvidia_do_start || result=1
   fi
+  if [ "$(setting intel_installed)" = true ] && [ -n "$(installed_package i915)" ]; then
+    intel_do_ensure || result=1
+  fi
+  return "$result"
 }
 
 do_status() {
@@ -997,7 +955,7 @@ do_status() {
     local vf
     for vf in $(intel_vfs_pci); do
       local drv
-      drv="$(readlink "/sys/devices/pci${vf%:*}/${vf}/driver" 2>/dev/null)"
+      drv="$(readlink "/sys/bus/pci/devices/${vf}/driver" 2>/dev/null)"
       echo "  ${vf}  ${drv##*/}"
     done
   else
@@ -1005,22 +963,29 @@ do_status() {
   fi
 }
 
-case "$1" in
+if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then return 0; fi
+case "${1:-}" in status) ;; *) operation_lock || exit 1 ;; esac
+case "${1:-}" in
+  restore)         do_restore ;;
   ensure)          do_ensure ;;
   start)           do_start ;;
   stop)            do_stop ;;
-  restart)         do_stop; reload_driver; do_start ;;
+  restart)         do_restart ;;
   update)          do_update ;;
-  apply)           nvidia_setup_config; nvidia_apply_devices ;;
+  apply)           nvidia_setup_config && nvidia_apply_devices ;;
   status)          do_status ;;
-  nvidia_install)    nvidia_do_install ;;
+  nvidia_install)    nvidia_do_install "${2:-}" ;;
   nvidia_uninstall)  nvidia_do_uninstall ;;
   nvidia_start)      nvidia_do_start ;;
-  nvidia_update)     nvidia_do_update ;;
+  nvidia_update)     nvidia_do_update "${2:-}" ;;
   nvidia_license)    nvidia_apply_license ;;
-  nvidia_attach_vm)  nvidia_attach_vm "$2" "$3" ;;
-  nvidia_detach_vm)  nvidia_detach_vm "$2" "$3" ;;
-  intel_install)     intel_do_install ;;
+  nvidia_add_device) nvidia_add_device "${2:-}" "${3:-}" "${4:-}" ;;
+  nvidia_start_device) nvidia_start_device "${2:-}" ;;
+  nvidia_stop_device) nvidia_stop_device "${2:-}" ;;
+  nvidia_remove_device) nvidia_remove_device "${2:-}" ;;
+  nvidia_attach_vm)  nvidia_attach_vm "${2:-}" "${3:-}" ;;
+  nvidia_detach_vm)  nvidia_detach_vm "${2:-}" "${3:-}" ;;
+  intel_install)     intel_do_install "${2:-}" ;;
   intel_uninstall)   intel_do_uninstall ;;
   intel_ensure)      intel_do_ensure ;;
   intel_load)        intel_load_module ;;

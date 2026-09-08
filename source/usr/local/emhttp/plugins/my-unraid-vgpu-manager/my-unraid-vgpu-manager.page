@@ -3,838 +3,309 @@ Title="Unraid vGPU Manager"
 Icon="nvidia-driver.png"
 ---
 <?php
-/* my-unraid-vgpu-manager settings page
- * Unified management of NVIDIA vGPU + Intel i915 SR-IOV.
- * Drivers are installed on demand from this page - nothing is installed
- * automatically when the plugin is added.
- */
-
-$vgpu_plugin  = "my-unraid-vgpu-manager";
-$vgpu_emhttp  = "/usr/local/emhttp/plugins/$vgpu_plugin";
-$vgpu_cfgdir  = "/boot/config/plugins/$vgpu_plugin";
-$vgpu_devcfg  = "$vgpu_cfgdir/vgpu-devices.cfg";
-$vgpu_usercfg = "/boot/config/nvidia-vgpu";
-$vgpu_rc      = "$vgpu_emhttp/scripts/rc.vgpu";
-$override_toml = "$vgpu_usercfg/profile_override.toml";
-
-function vgpu_setting($key, $default = "") {
-  global $vgpu_cfgdir;
-  $file = "$vgpu_cfgdir/settings.cfg";
-  if (is_file($file)) {
-    foreach (file($file, FILE_IGNORE_NEW_LINES) as $line) {
-      if (strpos($line, "$key=") === 0) return substr($line, strlen($key) + 1);
-    }
-  }
-  return $default;
-}
-
-function vgpu_set_setting($key, $value) {
-  global $vgpu_cfgdir;
-  $file = "$vgpu_cfgdir/settings.cfg";
-  $lines = is_file($file) ? file($file, FILE_IGNORE_NEW_LINES) : [];
-  $found = false;
-  foreach ($lines as $i => $line) {
-    if (strpos($line, "$key=") === 0) { $lines[$i] = "$key=$value"; $found = true; }
-  }
-  if (!$found) $lines[] = "$key=$value";
-  file_put_contents($file, implode("\n", $lines)."\n");
-}
-
-function vgpu_devices() {
-  global $vgpu_devcfg;
-  $out = [];
-  if (is_file($vgpu_devcfg)) {
-    foreach (file($vgpu_devcfg, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) as $line) {
-      if ($line === '' || $line[0] === '#') continue;
-      $p = explode('|', $line);
-      if (count($p) >= 3) $out[] = ['uuid' => $p[0], 'pci' => $p[1], 'type' => $p[2]];
-    }
-  }
-  return $out;
-}
-
-function vgpu_save_devices($devices) {
-  global $vgpu_devcfg;
-  $lines = ["# managed by the Unraid vGPU Manager plugin page - UUID|PCI|TYPE"];
-  foreach ($devices as $d) $lines[] = "{$d['uuid']}|{$d['pci']}|{$d['type']}";
-  file_put_contents($vgpu_devcfg, implode("\n", $lines)."\n");
-}
-
-$valid_uuid = '/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i';
-$valid_pci  = '/^[0-9a-f]{4}:[0-9a-f]{2}:[0-9a-f]{2}\.[0-9a-f]$/i';
-$valid_type = '/^[A-Za-z0-9_.\-]+$/';
-
-/* ---------- handle actions ---------- */
-$vgpu_msg = ""; $vgpu_err = "";
-if (!empty($_POST['vgpu_action'])) {
-  $uuid  = isset($_POST['uuid'])  ? strtolower(trim($_POST['uuid'])) : '';
-  $pci   = isset($_POST['pci'])   ? strtolower(trim($_POST['pci']))  : '';
-  $mtype = isset($_POST['mtype']) ? trim($_POST['mtype'])            : '';
-  switch ($_POST['vgpu_action']) {
-    case 'add_device':
-      if (!preg_match($valid_uuid, $uuid))      $vgpu_err = "Invalid UUID.";
-      elseif (!preg_match($valid_pci, $pci))    $vgpu_err = "Invalid PCI address.";
-      elseif (!preg_match($valid_type, $mtype)) $vgpu_err = "Invalid mdev type.";
-      else {
-        $devices = vgpu_devices();
-        foreach ($devices as $d) if ($d['uuid'] === $uuid) $vgpu_err = "A vGPU with this UUID already exists.";
-        if (!$vgpu_err) {
-          $devices[] = ['uuid' => $uuid, 'pci' => $pci, 'type' => $mtype];
-          vgpu_save_devices($devices);
-          shell_exec("mdevctl define -u ".escapeshellarg($uuid)." -p ".escapeshellarg($pci)." --type ".escapeshellarg($mtype)." 2>&1");
-          $start_out = shell_exec("mdevctl start -u ".escapeshellarg($uuid)." 2>&1");
-          $vgpu_msg = "vGPU $uuid added.";
-          if (is_dir("/sys/bus/mdev/devices/$uuid")) $vgpu_msg .= " Device is running.";
-          else $vgpu_err = "Device saved but could not be started: ".trim($start_out);
-        }
-      }
-      break;
-    case 'remove_device':
-      if (preg_match($valid_uuid, $uuid)) {
-        shell_exec("mdevctl stop -u ".escapeshellarg($uuid)." 2>/dev/null");
-        shell_exec("mdevctl undefine -u ".escapeshellarg($uuid)." 2>/dev/null");
-        vgpu_save_devices(array_values(array_filter(vgpu_devices(), fn($d) => $d['uuid'] !== $uuid)));
-        $vgpu_msg = "vGPU $uuid removed.";
-      }
-      break;
-    case 'start_device':
-      if (preg_match($valid_uuid, $uuid)) {
-        foreach (vgpu_devices() as $d) if ($d['uuid'] === $uuid) {
-          shell_exec("mdevctl define -u ".escapeshellarg($d['uuid'])." -p ".escapeshellarg($d['pci'])." --type ".escapeshellarg($d['type'])." 2>/dev/null");
-          $start_out = shell_exec("mdevctl start -u ".escapeshellarg($d['uuid'])." 2>&1");
-          if (is_dir("/sys/bus/mdev/devices/$uuid")) $vgpu_msg = "vGPU $uuid started.";
-          else $vgpu_err = "Could not start $uuid: ".trim($start_out);
-        }
-      }
-      break;
-    case 'stop_device':
-      if (preg_match($valid_uuid, $uuid)) {
-        shell_exec("mdevctl stop -u ".escapeshellarg($uuid)." 2>&1");
-        $vgpu_msg = "vGPU $uuid stopped.";
-      }
-      break;
-    case 'save_settings':
-      $unlock = (isset($_POST['unlock']) && $_POST['unlock'] === 'true') ? 'true' : 'false';
-      $upd    = (isset($_POST['update_check']) && $_POST['update_check'] === 'true') ? 'true' : 'false';
-      $unlock_changed = (vgpu_setting('unlock', 'false') !== $unlock);
-      vgpu_set_setting('unlock', $unlock);
-      shell_exec("$vgpu_emhttp/include/exec.sh change_update_check ".escapeshellarg($upd));
-      $vgpu_msg = "Settings saved.";
-      if ($unlock_changed) $vgpu_msg .= " Stop any VM using a vGPU, then click 'Restart vGPU Services' for the new unlock setting (and profile list) to take effect.";
-      break;
-    case 'save_nvidia':
-      // license + module settings all live in the plugin page
-      $lsrv = trim($_POST['license_server'] ?? '');
-      $lport = trim($_POST['license_port'] ?? '443');
-      $lfeat = trim($_POST['feature_type'] ?? '0');
-      if (!ctype_digit($lport)) $lport = '443';
-      if (!ctype_digit($lfeat)) $lfeat = '0';
-      $dseries = trim($_POST['driver_series'] ?? 'auto');
-      if (!in_array($dseries, ['auto','16','19'], true)) $dseries = 'auto';
-      $unlock = (isset($_POST['unlock']) && $_POST['unlock'] === 'true') ? 'true' : 'false';
-      $uvm = (isset($_POST['load_uvm']) && $_POST['load_uvm'] === 'true') ? 'true' : 'false';
-      $modeset = (isset($_POST['load_modeset']) && $_POST['load_modeset'] === 'true') ? 'true' : 'false';
-      $drm = (isset($_POST['load_drm']) && $_POST['load_drm'] === 'true') ? 'true' : 'false';
-      vgpu_set_setting('nvidia_license_server', $lsrv);
-      vgpu_set_setting('nvidia_license_port', $lport);
-      vgpu_set_setting('nvidia_feature_type', $lfeat);
-      vgpu_set_setting('nvidia_series', $dseries);
-      vgpu_set_setting('nvidia_unlock', $unlock);
-      vgpu_set_setting('nvidia_load_uvm', $uvm);
-      vgpu_set_setting('nvidia_load_modeset', $modeset);
-      vgpu_set_setting('nvidia_load_drm', $drm);
-      // write gridd.conf now if the driver is present
-      shell_exec("$vgpu_rc nvidia_license 2>/dev/null");
-      $vgpu_msg = "NVIDIA settings saved.";
-      if ($unlock !== vgpu_setting('unlock')) {
-        vgpu_set_setting('unlock', $unlock);
-        $vgpu_msg .= " Restart vGPU Services for the unlock/profile change to take effect.";
-      }
-      break;
-    case 'save_intel':
-      $vf = trim($_POST['vf_number'] ?? '7');
-      if (!ctype_digit($vf) || $vf < 0 || $vf > 63) $vf = '7';
-      vgpu_set_setting('intel_vf_number', $vf);
-      shell_exec("$vgpu_rc intel_set_vfs ".escapeshellarg($vf)." 2>/dev/null");
-      $vgpu_msg = "Intel settings saved.";
-      break;
-    case 'save_override':
-      if (!is_dir($vgpu_usercfg)) mkdir($vgpu_usercfg, 0755, true);
-      $content = str_replace("\r", "", $_POST['override_content'] ?? '');
-      file_put_contents($override_toml, $content);
-      shell_exec(escapeshellarg($vgpu_rc)." apply 2>/dev/null");
-      $vgpu_msg = "profile_override.toml saved. Restart the vGPU services (and your VM) for changes to take effect.";
-      break;
-    case 'attach_vm':
-      $vm = trim($_POST['vm'] ?? '');
-      if (!preg_match($valid_uuid, $uuid)) $vgpu_err = "Invalid vGPU UUID.";
-      elseif ($vm === '') $vgpu_err = "Choose a VM to attach to.";
-      else {
-        $out = shell_exec(escapeshellarg($vgpu_rc)." nvidia_attach_vm ".escapeshellarg($uuid)." ".escapeshellarg($vm)." 2>&1");
-        $vgpu_msg = trim($out);
-        if (strpos($out, 'ERROR') !== false) { $vgpu_err = trim($out); $vgpu_msg = ""; }
-      }
-      break;
-    case 'detach_vm':
-      $vm = trim($_POST['vm'] ?? '');
-      if (!preg_match($valid_uuid, $uuid)) $vgpu_err = "Invalid vGPU UUID.";
-      elseif ($vm === '') $vgpu_err = "Choose a VM to detach from.";
-      else {
-        $out = shell_exec(escapeshellarg($vgpu_rc)." nvidia_detach_vm ".escapeshellarg($uuid)." ".escapeshellarg($vm)." 2>&1");
-        $vgpu_msg = trim($out);
-        if (strpos($out, 'ERROR') !== false) { $vgpu_err = trim($out); $vgpu_msg = ""; }
-      }
-      break;
-  }
-}
-
-/* ---------- gather status ---------- */
-$kernel      = trim(shell_exec("uname -r"));
-$unraid_v    = trim(shell_exec("cut -d '\"' -f2 /etc/unraid-version"));
-$installed_v = trim(shell_exec("modinfo -F version nvidia 2>/dev/null | head -1"));
-$loaded_v    = trim(@file_get_contents("/sys/module/nvidia/version"));
-$mgr_running = trim(shell_exec("pgrep -x nvidia-vgpu-mgr 2>/dev/null")) !== '';
-$i915_inst   = trim(shell_exec("modinfo -F version i915 2>/dev/null | head -1"));
-$i915_loaded = trim(shell_exec("lsmod 2>/dev/null | awk '/^i915 /{print $3}'")) !== '';
-$intel_pf    = trim(shell_exec("lspci -D 2>/dev/null | grep -E 'VGA compatible controller|Display controller' | grep -i intel | awk '{print \$1}' | grep '\\.0' | sort -r | tail -1"));
-$intel_vfs   = '';
-$intel_total = '';
-if ($intel_pf) {
-  $intel_vfs   = trim(@file_get_contents("/sys/bus/pci/devices/$intel_pf/sriov_numvfs"));
-  $intel_total = trim(@file_get_contents("/sys/bus/pci/devices/$intel_pf/sriov_totalvfs"));
-}
+require_once '/usr/local/emhttp/plugins/my-unraid-vgpu-manager/include/web.php';
+$kernel = vgpu_command_text(['uname', '-r']);
+$unraid_v = (@parse_ini_file('/etc/unraid-version') ?: [])['version'] ?? '';
 $nvidia_inst = vgpu_setting('nvidia_installed', 'false') === 'true';
-$intel_inst  = vgpu_setting('intel_installed', 'false') === 'true';
-
-/* NVIDIA GPUs + their mdev types straight from sysfs */
-$gpus = []; $gpu_ids = []; $gpu_types = []; $types_present = false;
-foreach (glob("/sys/bus/pci/devices/*") as $dev) {
-  $vendor = trim(@file_get_contents("$dev/vendor"));
-  $class  = trim(@file_get_contents("$dev/class"));
-  if ($vendor !== "0x10de" || strpos($class, "0x03") !== 0) continue;
-  $pci  = basename($dev);
-  $name = trim(shell_exec("lspci -s ".escapeshellarg(substr($pci, 5))." 2>/dev/null | cut -d ':' -f3-"));
-  $gpus[$pci] = $name ?: "NVIDIA GPU";
-  $gpu_ids[$pci] = strtolower(trim(@file_get_contents("$dev/device")));
-  $gpu_types[$pci] = [];
-  foreach (glob("$dev/mdev_supported_types/*") as $tdir) {
-    $types_present = true;
-    $info = [];
-    foreach (preg_split('/,\s*/', trim(@file_get_contents("$tdir/description"))) as $kv) {
-      $p = explode('=', $kv, 2);
-      if (count($p) == 2) $info[trim($p[0])] = trim($p[1]);
+$intel_inst = vgpu_setting('intel_installed', 'false') === 'true';
+$module_info = vgpu_run(['modinfo', '-F', 'version', 'nvidia']);
+$installed_v = $module_info['code'] === 0 ? $module_info['output'] : '';
+$loaded_v = vgpu_read('/sys/module/nvidia/version');
+$i915_loaded = is_dir('/sys/module/i915');
+$i915_sriov = is_file('/sys/module/i915/parameters/max_vfs');
+$mgr_running = vgpu_run(['pgrep', '-x', 'nvidia-vgpu-mgr'])['code'] === 0;
+$gpus = []; $gpu_ids = []; $gpu_types = []; $types_present = false; $intel_pf = '';
+foreach (glob('/sys/bus/pci/devices/*') ?: [] as $dev) {
+    $vendor = vgpu_read("$dev/vendor"); $class = vgpu_read("$dev/class");
+    if (strpos($class, '0x03') !== 0) continue;
+    $pci = basename($dev);
+    if ($vendor === '0x8086' && !is_link("$dev/physfn") && $intel_pf === '') $intel_pf = $pci;
+    if ($vendor !== '0x10de') continue;
+    $name = vgpu_run(['lspci', '-D', '-s', $pci]);
+    $gpus[$pci] = $name['code'] === 0 && $name['output'] !== '' ? $name['output'] : 'NVIDIA GPU';
+    if (!is_link("$dev/physfn")) $gpu_ids[$pci] = strtolower(vgpu_read("$dev/device"));
+    $gpu_types[$pci] = [];
+    foreach (glob("$dev/mdev_supported_types/nvidia-*") ?: [] as $tdir) {
+        $types_present = true; $info = [];
+        foreach (preg_split('/,\s*/', vgpu_read("$tdir/description")) as $pair) {
+            $parts = explode('=', $pair, 2);
+            if (count($parts) === 2) $info[trim($parts[0])] = trim($parts[1]);
+        }
+        $gpu_types[$pci][] = ['type'=>basename($tdir), 'name'=>vgpu_read("$tdir/name"),
+            'avail'=>vgpu_read("$tdir/available_instances"), 'fb'=>$info['framebuffer'] ?? '',
+            'heads'=>$info['num_heads'] ?? '', 'res'=>$info['max_resolution'] ?? '', 'frl'=>$info['frl_config'] ?? ''];
     }
-    $gpu_types[$pci][] = [
-      'type'  => basename($tdir),
-      'name'  => trim(@file_get_contents("$tdir/name")),
-      'avail' => trim(@file_get_contents("$tdir/available_instances")),
-      'fb'    => $info['framebuffer']    ?? '',
-      'heads' => $info['num_heads']      ?? '',
-      'res'   => $info['max_resolution'] ?? '',
-      'frl'   => $info['frl_config']     ?? '',
-      'max'   => $info['max_instance']   ?? '',
-    ];
-  }
-  usort($gpu_types[$pci], fn($a, $b) => strnatcmp($a['name'], $b['name']));
+    usort($gpu_types[$pci], fn($a,$b) => strnatcmp($a['name'], $b['name']));
 }
-
-$devices = vgpu_devices();
-foreach ($devices as &$d) $d['running'] = is_dir("/sys/bus/mdev/devices/{$d['uuid']}");
-unset($d);
-
-/* which vGPU driver series the installed hardware supports - device id lists
- * taken from each branch's vgpuConfig.xml:
- *   16.x = 535.309.01 (LTS, last branch with Pascal: P4/P40/P100/P6)
- *   19.x = 580.178.05 (LTS, Turing T4 and newer, plus Blackwell) */
-$vgpu16_ids = array_fill_keys(explode(' ', '0x13bd 0x13f2 0x13f3 0x15f7 0x15f8 0x15f9 0x1b38 0x1bb3 0x1bb4 0x1db1 0x1db3 0x1db4 0x1db5 0x1db6 0x1df6 0x1e30 0x1e78 0x1eb8 0x2230 0x2231 0x2233 0x2235 0x2236 0x2238 0x25b6 0x26b1 0x26b2 0x26b5 0x26b9 0x26ba 0x27b6 0x27b8'), true);
-$vgpu19_ids = array_fill_keys(explode(' ', '0x13bd 0x1db1 0x1db3 0x1db4 0x1db5 0x1db6 0x1df6 0x1e30 0x1e78 0x1eb8 0x2230 0x2231 0x2233 0x2235 0x2236 0x2238 0x25b6 0x26b1 0x26b2 0x26b3 0x26b5 0x26b9 0x26ba 0x27b6 0x27b8 0x2bb5 0x2bb9 0x2c3a'), true);
-$any16 = true; $any19 = true; $anyGpu = false;
-foreach ($gpu_ids as $id) {
-  $anyGpu = true;
-  if (!isset($vgpu16_ids[$id])) $any16 = false;
-  if (!isset($vgpu19_ids[$id])) $any19 = false;
-}
-if (!$anyGpu)             $series_caps = 'none';
-elseif ($any16 && $any19) $series_caps = 'both';
-elseif ($any16)           $series_caps = '16';
-elseif ($any19)           $series_caps = '19';
-else                      $series_caps = 'none';
+$gpu_map = json_decode(file_get_contents("$vgpu_emhttp/include/gpu-series.json"), true);
+$cap16 = $gpu_ids && !array_diff($gpu_ids, $gpu_map['16']);
+$cap19 = $gpu_ids && !array_diff($gpu_ids, $gpu_map['19']);
+$series_caps = $cap16 && $cap19 ? 'both' : ($cap16 ? '16' : ($cap19 ? '19' : 'none'));
 $series_sel = vgpu_setting('nvidia_series', 'auto');
-$series_eff = in_array($series_sel, ['16','19']) ? $series_sel : (($series_caps === '19') ? '19' : '16');
-/* series of the currently installed driver (535.* = 16.x, 580.* = 19.x) */
-$series_inst = (strpos((string)$installed_v, '580.') === 0) ? '19' : ((strpos((string)$installed_v, '535.') === 0) ? '16' : '');
-
-/* libvirt VMs + which vGPU mdev each VM currently has attached (persistent config) */
-$vm_list = array_values(array_filter(array_map('trim',
-  explode("\n", (string)shell_exec("virsh list --all --name 2>/dev/null")))));
-$mdev_to_vm = [];
+$series_eff = in_array($series_sel, ['16','19'], true) ? $series_sel : ($cap19 ? '19' : '16');
+$series_inst = strpos($installed_v, '580.') === 0 ? '19' : (strpos($installed_v, '535.') === 0 ? '16' : '');
+$install_choices = $cap16 && $cap19 ? ['19','16'] : ($cap16 ? ['16'] : ($cap19 ? ['19'] : ['16','19']));
+$vm_list = vgpu_vms(); $mdev_to_vm = []; $live_mdev_to_vm = [];
+$active_vms = explode("\n", vgpu_command_text(['virsh', 'list', '--name']));
 foreach ($vm_list as $vm) {
-  // --inactive reads the persistent config; for a running VM the default
-  // (active) dumpxml would hide a --config attach that only applies on next boot.
-  $vmxml = (string)shell_exec("virsh dumpxml --inactive ".escapeshellarg($vm)." 2>/dev/null");
-  if (preg_match_all("/<hostdev\b[^>]*type='mdev'[^>]*>.*?<address\s+uuid='([^']+)'/s", $vmxml, $m)) {
-    foreach ($m[1] as $u) $mdev_to_vm[$u] = $vm;
-  }
+    foreach (vgpu_xml_mdevs(vgpu_command_text(['virsh','dumpxml','--inactive','--domain',$vm])) as $uuid) $mdev_to_vm[$uuid][] = $vm;
+    if (in_array($vm, $active_vms, true)) {
+        foreach (vgpu_xml_mdevs(vgpu_command_text(['virsh','dumpxml','--domain',$vm])) as $uuid) $live_mdev_to_vm[$uuid][] = $vm;
+    }
 }
-
-$unlock_on    = vgpu_setting('nvidia_unlock', vgpu_setting('unlock', 'false')) === 'true';
-$upd_check_on = vgpu_setting('update_check', 'true') === 'true';
-$lsrv   = vgpu_setting('nvidia_license_server');
-$lport  = vgpu_setting('nvidia_license_port', '443');
-$lfeat  = vgpu_setting('nvidia_feature_type', '0');
-$luvm   = vgpu_setting('nvidia_load_uvm', 'true') === 'true';
-$lms    = vgpu_setting('nvidia_load_modeset', 'true') === 'true';
-$ldrm   = vgpu_setting('nvidia_load_drm', 'true') === 'true';
-$vfnum  = vgpu_setting('intel_vf_number', '7');
-$override_content = is_file($override_toml) ? file_get_contents($override_toml) : "";
-$xml_override_present = is_file("$vgpu_usercfg/vgpuConfig.xml");
-$new_uuid = trim(shell_exec("uuidgen 2>/dev/null")) ?: sprintf('%04x%04x-%04x-4%03x-%04x-%04x%04x%04x',
-  mt_rand(0,0xffff), mt_rand(0,0xffff), mt_rand(0,0xffff), mt_rand(0,0xfff),
-  mt_rand(0x8000,0xbfff), mt_rand(0,0xffff), mt_rand(0,0xffff), mt_rand(0,0xffff));
-?>
-
-<script>
-// avoid re-posting actions on page refresh
-if (window.history.replaceState) window.history.replaceState(null, null, window.location.href);
-
-var gpuTypes = <?= json_encode($gpu_types) ?>;
-
-function esc(s) {
-  var d = document.createElement('div');
-  d.innerText = s == null ? '' : String(s);
-  return d.innerHTML;
-}
-
-function fillTypes() {
-  var pci = document.getElementById('add_pci').value;
-  var box = document.getElementById('type_table');
-  var types = gpuTypes[pci] || [];
-  if (!types.length) {
-    box.innerHTML = '<i>No mdev types available on this GPU.</i>';
-    return;
-  }
-  var html = '<table class="vgpu-table vgpu-ptable">' +
-    '<tr><th></th><th>Profile</th><th>Type</th><th>Framebuffer</th><th>Displays</th><th>Max Resolution</th><th>FRL</th><th>Free</th></tr>';
-  types.forEach(function(t, i) {
-    var soldout = (parseInt(t.avail, 10) || 0) < 1;
-    html += '<tr class="vgpu-prow' + (soldout ? ' vgpu-soldout' : '') + '" data-row="' + i + '">' +
-      '<td><input type="radio" name="mtype" value="' + esc(t.type) + '"' + (soldout ? ' disabled' : '') + '></td>' +
-      '<td><b>' + esc(t.name) + '</b></td>' +
-      '<td>' + esc(t.type) + '</td>' +
-      '<td>' + esc(t.fb) + '</td>' +
-      '<td>' + esc(t.heads) + '</td>' +
-      '<td>' + esc(t.res) + '</td>' +
-      '<td>' + esc(t.frl ? t.frl + ' fps' : '') + '</td>' +
-      '<td>' + esc(t.avail + (t.max ? ' / ' + t.max : '')) + '</td>' +
-      '</tr>';
-  });
-  html += '</table>';
-  box.innerHTML = html;
-  box.querySelectorAll('tr.vgpu-prow').forEach(function(row) {
-    row.addEventListener('click', function() {
-      var radio = row.querySelector('input[type=radio]');
-      if (!radio || radio.disabled) return;
-      radio.checked = true;
-      box.querySelectorAll('tr.vgpu-prow').forEach(function(r) { r.classList.remove('vgpu-selected'); });
-      row.classList.add('vgpu-selected');
-    });
-  });
-}
-
-function genUUID() {
-  var u = ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g, c =>
-    (c ^ crypto.getRandomValues(new Uint8Array(1))[0] & 15 >> c / 4).toString(16));
-  document.getElementById('add_uuid').value = u;
-}
-
-function vgpuAction(action, uuid) {
-  var f = document.getElementById('vgpu_action_form');
-  f.vgpu_action.value = action;
-  f.uuid.value = uuid;
-  if (action === 'remove_device' && !confirm('Remove this vGPU device? Make sure no VM is using it.')) return;
-  f.submit();
-}
-
-function toggleXML(id) {
-  var el = document.getElementById(id);
-  el.style.display = (el.style.display === 'none') ? 'block' : 'none';
-}
-
-function copyXML(id) {
-  var txt = document.getElementById(id).innerText;
-  navigator.clipboard.writeText(txt).then(function(){ /* ok */ });
-}
-
-function restartServices() {
-  openBox('/plugins/my-unraid-vgpu-manager/include/exec.sh&arg1=restart_services', 'Restarting vGPU Services', 600, 900, true);
-}
-
-function updateDriver(series) {
-  openBox('/plugins/my-unraid-vgpu-manager/include/exec.sh&arg1=update_driver&arg2='+(series||'16')+'&arg3=latest', 'Updating Nvidia vGPU Driver', 600, 900, true);
-}
-
-function installNvidia(series) {
-  openBox('/plugins/my-unraid-vgpu-manager/include/exec.sh&arg1=install_nvidia&arg2='+(series||'16'), 'Installing NVIDIA vGPU Driver', 600, 900, true);
-}
-
-function uninstallNvidia() {
-  if (!confirm('Uninstall the NVIDIA vGPU driver? Make sure no VM is using a vGPU.')) return;
-  openBox('/plugins/my-unraid-vgpu-manager/include/exec.sh&arg1=uninstall_nvidia', 'Uninstalling NVIDIA vGPU Driver', 600, 900, true);
-}
-
-function installIntel() {
-  openBox('/plugins/my-unraid-vgpu-manager/include/exec.sh&arg1=install_intel', 'Installing Intel i915 SR-IOV Driver', 600, 900, true);
-}
-
-function uninstallIntel() {
-  if (!confirm('Uninstall the Intel i915 SR-IOV driver? This drops all VFs.')) return;
-  openBox('/plugins/my-unraid-vgpu-manager/include/exec.sh&arg1=uninstall_intel', 'Uninstalling Intel i915 SR-IOV Driver', 600, 900, true);
-}
-
-function switchTab(id, btn) {
-  document.querySelectorAll('.vgpu-tab').forEach(function(t){ t.classList.remove('active'); });
-  document.querySelectorAll('.vgpu-tab-content').forEach(function(c){ c.classList.remove('active'); });
-  if (btn) btn.classList.add('active');
-  var el = document.getElementById(id);
-  if (el) el.classList.add('active');
-  // re-render the profile table when its tab becomes visible (element was hidden)
-  if (id === 'tab-nvidia') { try { fillTypes(); } catch(e){} }
-}
-</script>
-
-<style>
-.vgpu-panel {background: var(--background-alt, rgba(125,125,125,.08)); border: 1px solid rgba(125,125,125,.25); border-radius: 6px; padding: 12px 16px; margin-bottom: 18px;}
-.vgpu-panel h3 {margin: 0 0 10px 0;}
-.vgpu-status td {padding: 2px 18px 2px 0; line-height: 1.6rem;}
-.vgpu-ok {color: #4caf50; font-weight: bold;}
-.vgpu-bad {color: #ef5350; font-weight: bold;}
-.vgpu-warn {color: #ffa726; font-weight: bold;}
-.vgpu-table {width: 100%; border-collapse: collapse; margin-top: 6px;}
-.vgpu-table th {text-align: left; padding: 4px 10px; border-bottom: 1px solid rgba(125,125,125,.35);}
-.vgpu-table td {padding: 6px 10px; border-bottom: 1px solid rgba(125,125,125,.15); font-family: bitstream, monospace;}
-.vgpu-banner {border-radius: 6px; padding: 10px 14px; margin-bottom: 14px;}
-.vgpu-banner.err {background: rgba(239,83,80,.15); border: 1px solid #ef5350;}
-.vgpu-banner.msg {background: rgba(76,175,80,.12); border: 1px solid #4caf50;}
-.vgpu-banner.warn {background: rgba(255,167,38,.12); border: 1px solid #ffa726;}
-.vgpu-xml {display: none; background: rgba(0,0,0,.25); padding: 10px; border-radius: 4px; overflow-x: auto; font-size: 1.1rem;}
-.vgpu-addform td {padding: 4px 10px;}
-.vgpu-ptable {width: auto; min-width: 640px;}
-.vgpu-ptable td {font-family: inherit; white-space: nowrap;}
-tr.vgpu-prow {cursor: pointer;}
-tr.vgpu-prow:hover {background: rgba(125,125,125,.12);}
-tr.vgpu-selected {background: rgba(76,175,80,.18) !important;}
-tr.vgpu-soldout {opacity: .45; cursor: not-allowed;}
-.vgpu-mono {font-family: bitstream, monospace;}
-#override_area {width: 100%; max-width: 900px; height: 220px; font-family: bitstream, monospace;}
-.vgpu-tabs {margin: 0 0 16px 0;}
-.vgpu-tab {background: none; border: 1px solid rgba(125,125,125,.4); border-radius: 3px; padding: 4px 14px; cursor: pointer; color: inherit; margin-right: 6px;}
-.vgpu-tab:hover {border-color: rgba(125,125,125,.7);}
-.vgpu-tab.active {background: rgba(125,125,125,.2); border-color: rgba(125,125,125,.6);}
-.vgpu-tab-content {display: none;}
-.vgpu-tab-content.active {display: block;}
-</style>
-
-<form id="vgpu_action_form" method="POST" style="display:none">
-  <input type="hidden" name="vgpu_action" value="">
-  <input type="hidden" name="uuid" value="">
-</form>
-
-<?php if ($vgpu_err): ?><div class="vgpu-banner err"><i class="fa fa-exclamation-triangle"></i> <?= htmlspecialchars($vgpu_err) ?></div><?php endif; ?>
-<?php if ($vgpu_msg): ?><div class="vgpu-banner msg"><i class="fa fa-check"></i> <?= htmlspecialchars($vgpu_msg) ?></div><?php endif; ?>
-
-<div class="vgpu-tabs">
-  <button type="button" class="vgpu-tab active" onclick="switchTab('tab-drivers', this)">Drivers</button>
-  <button type="button" class="vgpu-tab" onclick="switchTab('tab-nvidia', this)">NVIDIA GPU</button>
-  <button type="button" class="vgpu-tab" onclick="switchTab('tab-i915', this)">Intel i915 SR-IOV</button>
-</div>
-
-<!-- ==================== Tab 1: Drivers ==================== -->
-<div id="tab-drivers" class="vgpu-tab-content active">
-
-<div class="vgpu-panel">
-<h3><i class="fa fa-server"></i> Driver Status</h3>
-<table class="vgpu-status">
-<tr><td>Unraid:</td><td><?= htmlspecialchars($unraid_v) ?></td>
-    <td>Kernel:</td><td><?= htmlspecialchars($kernel) ?></td></tr>
-<tr><td>NVIDIA driver:</td><td><?= $nvidia_inst ? "<span class='vgpu-ok'>installed</span>" : "<span class='vgpu-bad'>not installed</span>" ?></td>
-    <td>Loaded:</td><td><?= $loaded_v ? "<span class='vgpu-ok'>v".htmlspecialchars($loaded_v)."</span>" : "<span class='vgpu-bad'>not loaded</span>" ?></td></tr>
-<tr><td>Intel i915:</td><td><?= $intel_inst ? "<span class='vgpu-ok'>installed</span>" : "<span class='vgpu-bad'>not installed</span>" ?></td>
-    <td>i915 module:</td><td><?= $i915_inst ? "<span class='vgpu-ok'>".htmlspecialchars($i915_inst)."</span>" : "<span class='vgpu-bad'>not loaded</span>" ?></td></tr>
-<tr><td>Intel GPU (PF):</td><td><?= $intel_pf ? "<span class='vgpu-mono'>".htmlspecialchars($intel_pf)."</span>" : "<span class='vgpu-bad'>none detected</span>" ?></td>
-    <td>VFs:</td><td><?= ($intel_vfs !== '' && $intel_total !== '') ? "<span class='vgpu-mono'>".htmlspecialchars($intel_vfs)." / ".htmlspecialchars($intel_total)."</span>" : "n/a" ?></td></tr>
-</table>
-<p style="opacity:.8; margin-top:8px"><i class="fa fa-info-circle"></i>
-Drivers are installed <b>on demand</b> from this page - installing this plugin does not change
-your GPU setup until you click Install.</p>
-</div>
-
-<!-- NVIDIA driver install/uninstall -->
-<div class="vgpu-panel">
-<h3><i class="fa fa-cube"></i> NVIDIA vGPU Driver</h3>
-<?php if (!$nvidia_inst): ?>
-<div class="vgpu-banner warn"><i class="fa fa-download"></i>
-The NVIDIA vGPU driver is not installed yet.
-<?php if ($series_caps === 'both'): ?>
-<br><span style="opacity:.8"><i class="fa fa-microchip"></i> Detected:
-<?= htmlspecialchars(implode('; ', array_map(fn($p) => htmlspecialchars($gpus[$p])." ({$gpu_ids[$p]})", array_keys($gpus)))) ?> -
-supported by <b>both</b> series. 16.x is the last branch with Pascal (P4/P40); 19.x is the new LTS for T4 and newer:</span><br>
-<select id="nvidia_series_pick" style="margin:6px 4px 0 0">
-  <option value="16">16.x LTS - 535.309.01 (incl. Pascal P4/P40/P100, V100)</option>
-  <option value="19">19.x LTS - 580.178.05 (T4/A40/L40/RTX Ada/Blackwell, no Pascal)</option>
-</select>
-<input type="button" value="Install Selected Series" onclick="installNvidia(document.getElementById('nvidia_series_pick').value)">
-<?php elseif ($series_caps === '16'): ?>
-<br><span style="opacity:.8"><i class="fa fa-microchip"></i> Detected:
-<?= htmlspecialchars(implode('; ', array_map(fn($p) => htmlspecialchars($gpus[$p])." ({$gpu_ids[$p]})", array_keys($gpus)))) ?> -
-only supported by <b>16.x</b> (Pascal was dropped from branch 17 on):</span><br>
-<input type="button" value="Install 16.x (535.309.01)" onclick="installNvidia('16')" style="margin:6px 0 0 0">
-<?php elseif ($series_caps === '19'): ?>
-<br><span style="opacity:.8"><i class="fa fa-microchip"></i> Detected:
-<?= htmlspecialchars(implode('; ', array_map(fn($p) => htmlspecialchars($gpus[$p])." ({$gpu_ids[$p]})", array_keys($gpus)))) ?> -
-supported by <b>16.x and 19.x</b>. The 19.x series is the current LTS:</span><br>
-<select id="nvidia_series_pick" style="margin:6px 4px 0 0">
-  <option value="19">19.x LTS - 580.178.05 (recommended)</option>
-  <option value="16">16.x LTS - 535.309.01</option>
-</select>
-<input type="button" value="Install Selected Series" onclick="installNvidia(document.getElementById('nvidia_series_pick').value)">
-<?php else: ?>
-<br><span style="opacity:.8"><i class="fa fa-microchip"></i> No GPU from the vGPU support lists detected
-<?= $anyGpu ? "(consumer GeForce cards need the unlock option - the unlock kernel patch is only built into the 16.x series)" : "(no NVIDIA GPU found - the package will activate once the GPU is present)" ?>.
-</span><br>
-<input type="button" value="Install 16.x (535.309.01)" onclick="installNvidia('16')" style="margin:6px 0 0 0">
-<?php endif; ?>
-</div>
-<?php else: ?>
-<div class="vgpu-banner msg"><i class="fa fa-check"></i>
-NVIDIA vGPU driver installed (<?= $installed_v ? "v".htmlspecialchars($installed_v) : "" ?>,
-<?= $series_inst ? "series {$series_inst}.x" : "unknown series" ?>).
-<input type="button" value="Uninstall" onclick="uninstallNvidia()" style="margin-left:12px">
-<input type="button" value="Update Driver" onclick="updateDriver('<?= $series_inst ?: $series_eff ?>')" style="margin-left:8px">
-</div>
-<?php endif; ?>
-</div>
-
-<!-- Intel driver install/uninstall -->
-<div class="vgpu-panel">
-<h3><i class="fa fa-microchip"></i> Intel i915 SR-IOV Driver</h3>
-<?php if (!$intel_inst): ?>
-<div class="vgpu-banner warn"><i class="fa fa-download"></i>
-The Intel i915 SR-IOV driver is not installed yet.
-<?php if (!$intel_pf): ?><br><span style="opacity:.7">No Intel GPU detected on this system - you can still install the
-package and it will activate at the next boot with an Intel iGPU present.</span><?php endif; ?>
-<input type="button" value="Install Intel i915 SR-IOV Driver" onclick="installIntel()" style="margin-left:12px">
-</div>
-<?php else: ?>
-<div class="vgpu-banner msg"><i class="fa fa-check"></i>
-Intel i915 SR-IOV driver installed (<?= htmlspecialchars($i915_inst ?: 'loaded') ?>).
-<input type="button" value="Uninstall" onclick="uninstallIntel()" style="margin-left:12px">
-</div>
-<?php endif; ?>
-</div>
-
-<!-- General -->
-<div class="vgpu-panel">
-<h3><i class="fa fa-cog"></i> General</h3>
-<form method="POST">
-<input type="hidden" name="vgpu_action" value="save_settings">
-<table class="vgpu-status">
-<tr><td>Check daily for driver updates:</td><td>
-  <select name="update_check">
-    <option value="true" <?= $upd_check_on ? "selected" : "" ?>>Yes</option>
-    <option value="false" <?= $upd_check_on ? "" : "selected" ?>>No</option>
-  </select>
-</td></tr>
-<tr><td></td><td><input type="submit" value="Apply"></td></tr>
-</table>
-</form>
-</div>
-
-</div><!-- /tab-drivers -->
-
-<!-- ==================== Tab 2: NVIDIA GPU ==================== -->
-<div id="tab-nvidia" class="vgpu-tab-content">
-
-<?php if (!$nvidia_inst): ?>
-<div class="vgpu-panel">
-<div class="vgpu-banner warn"><i class="fa fa-info-circle"></i>
-The NVIDIA vGPU driver is not installed yet. Install it from the <b>Drivers</b> tab first.</div>
-</div>
-<?php else: ?>
-
-<?php if (!$types_present): ?>
-<div class="vgpu-banner warn"><i class="fa fa-exclamation-triangle"></i>
-The driver is installed but <b>no vGPU mdev types are available</b>. Usually this means <code>nvidia-vgpud</code>
-rejected your GPU ("GPU not supported by vGPU" in the syslog) because it is missing from the bundled
-<code>vgpuConfig.xml</code>. For older cards (e.g. Pascal / Tesla P4) place a <code>vgpuConfig.xml</code> from a
-driver branch that still supports them (16.x / 535) at <code class="vgpu-mono">/boot/config/nvidia-vgpu/vgpuConfig.xml</code>
-<?= $xml_override_present ? "<b>(override file found - it is applied on service start)</b>" : "" ?>
-and click <b>Restart vGPU Services</b> below.
-</div>
-<?php endif; ?>
-
-<div class="vgpu-panel">
-<h3><i class="fa fa-info-circle"></i> Status</h3>
-<table class="vgpu-status">
-<tr><td>Driver installed:</td><td><?= $installed_v ? "<span class='vgpu-ok'>v".htmlspecialchars($installed_v)."</span>" : "<span class='vgpu-bad'>none</span>" ?></td>
-    <td>Driver loaded:</td><td><?= $loaded_v ? "<span class='vgpu-ok'>v".htmlspecialchars($loaded_v)."</span>" : "<span class='vgpu-bad'>not loaded</span>" ?></td></tr>
-<tr><td>nvidia-vgpu-mgr:</td><td><?= $mgr_running ? "<span class='vgpu-ok'>running</span>" : "<span class='vgpu-bad'>stopped</span>" ?></td>
-    <td>mdev types:</td><td><?= $types_present ? "<span class='vgpu-ok'>available</span>" : "<span class='vgpu-bad'>not available</span>" ?></td></tr>
-<tr><td>Driver series:</td><td colspan="3"><?= $series_inst ? "<span class='vgpu-ok'>{$series_inst}.x (installed)</span>" : "<span class='vgpu-bad'>none</span>" ?>
-    - hardware supports: <b><?= htmlspecialchars($series_caps) ?></b>, default: <?= htmlspecialchars($series_eff) ?>.x (change in License &amp; Modules)</td></tr>
-<tr><td>License server:</td><td colspan="3"><?= $lsrv ? "<span class='vgpu-mono'>".htmlspecialchars($lsrv.":".$lport)."</span> (FeatureType=".htmlspecialchars($lfeat).")" : "<span class='vgpu-warn'>not set - vGPU will not license</span>" ?></td></tr>
-<tr><td>Host docker GPU:</td><td colspan="3"><?php
-  $dk = @file_get_contents('/etc/docker/daemon.json');
-  if ($dk !== false && strpos($dk, '"nvidia"') !== false) {
-    echo "<span class='vgpu-ok'>configured - run containers with --gpus all</span>";
-  } else {
-    echo "<span class='vgpu-warn'>not configured (set at install/start)</span>";
-  }
-?></td></tr>
-<?php foreach ($gpus as $pci => $name): ?>
-<tr><td>GPU:</td><td colspan="3"><span class="vgpu-mono"><?= htmlspecialchars($pci) ?></span> - <?= htmlspecialchars($name) ?></td></tr>
-<?php endforeach; ?>
-</table>
-<div style="margin-top:10px">
-  <input type="button" value="Restart vGPU Services" onclick="restartServices()">
-  <input type="button" value="Update Driver" onclick="updateDriver('<?= $series_inst ?: $series_eff ?>')">
-  <span style="opacity:.7">&nbsp;Restart reloads the nvidia driver to rebuild the profile list. Stop any VM using a vGPU first.</span>
-</div>
-</div>
-
-<div class="vgpu-panel">
-<h3><i class="fa fa-key"></i> License & Modules</h3>
-<form method="POST">
-<input type="hidden" name="vgpu_action" value="save_nvidia">
-<table class="vgpu-status">
-<tr><td>License server (FastAPI-DLS / grid host):</td><td>
-  <input type="text" name="license_server" size="32" value="<?= htmlspecialchars($lsrv) ?>" placeholder="e.g. 192.168.1.10">
-  : <input type="text" name="license_port" size="5" value="<?= htmlspecialchars($lport) ?>">
-</td></tr>
-<tr><td>Feature type:</td><td>
-  <select name="feature_type">
-    <option value="0" <?= $lfeat=="0" ? "selected" : "" ?>>0 - NVIDIA Virtual PC (vPC, B-series)</option>
-    <option value="1" <?= $lfeat=="1" ? "selected" : "" ?>>1 - NVIDIA Virtual Workstation (vWS)</option>
-    <option value="2" <?= $lfeat=="2" ? "selected" : "" ?>>2 - NVIDIA RTX Virtual Workstation (vDWS, Q-series)</option>
-  </select>
-  <span style="opacity:.7">&nbsp;(P4: Q-series = 2, B-series = 0)</span>
-</td></tr>
-<tr><td>Driver series (16.x / 19.x):</td><td>
-  <select name="driver_series">
-    <option value="auto" <?= $series_sel=="auto" ? "selected" : "" ?>>Auto - detect from the installed GPU</option>
-    <option value="16" <?= $series_sel=="16" ? "selected" : "" ?>>16.x - 535.x (Pascal era, P4/P40/P100/V100)</option>
-    <option value="19" <?= $series_sel=="19" ? "selected" : "" ?>>19.x - 580.x (T4 and newer, current LTS)</option>
-  </select>
-  <span style="opacity:.7">&nbsp;used by the next driver install / update (both series cannot load side by side)</span>
-</td></tr>
-<tr><td>vGPU unlock (spoof consumer GPU):</td><td>
-  <select name="unlock">
-    <option value="false" <?= $unlock_on ? "" : "selected" ?>>Disabled - native vGPU profiles (Tesla / Quadro)</option>
-    <option value="true" <?= $unlock_on ? "selected" : "" ?>>Enabled - vgpu_unlock spoofing (consumer GPUs)</option>
-  </select>
-</td></tr>
-<tr><td>Load host modules (docker/CUDA):</td><td>
-  nvidia-uvm <select name="load_uvm"><option value="true" <?= $luvm ? "selected" : "" ?>>yes</option><option value="false" <?= $luvm ? "" : "selected" ?>>no</option></select>
-  nvidia-modeset <select name="load_modeset"><option value="true" <?= $lms ? "selected" : "" ?>>yes</option><option value="false" <?= $lms ? "" : "selected" ?>>no</option></select>
-  nvidia-drm <select name="load_drm"><option value="true" <?= $ldrm ? "selected" : "" ?>>yes</option><option value="false" <?= $ldrm ? "" : "selected" ?>>no</option></select>
-</td></tr>
-<tr><td></td><td><input type="submit" value="Save NVIDIA Settings"></td></tr>
-</table>
-</form>
-</div>
-
-<div class="vgpu-panel">
-<h3><i class="fa fa-clone"></i> vGPU Devices</h3>
-<p>These devices are created automatically at every boot - no user script needed. Assign one to a VM by
-adding the hostdev XML (click <i class="fa fa-code"></i>) to the VM's XML template.</p>
-
-<table class="vgpu-table">
-<tr><th>UUID</th><th>GPU</th><th>Profile</th><th>Status</th><th style="width:220px">Actions</th></tr>
-<?php if (!$devices): ?>
-<tr><td colspan="5"><i>No vGPU devices configured yet - add one below.</i></td></tr>
-<?php endif; ?>
-<?php foreach ($devices as $i => $d): $xmlid = "xml$i"; ?>
-<tr>
-  <td><?= htmlspecialchars($d['uuid']) ?></td>
-  <td><?= htmlspecialchars($d['pci']) ?></td>
-  <td><?= htmlspecialchars($d['type']) ?><?php
-      foreach ($gpu_types[$d['pci']] ?? [] as $t) if ($t['type'] === $d['type'] && $t['name']) echo " (".htmlspecialchars($t['name']).")";
-  ?></td>
-  <td><?= $d['running'] ? "<span class='vgpu-ok'>running</span>" : "<span class='vgpu-bad'>stopped</span>" ?></td>
-  <td>
-    <?php if ($d['running']): ?>
-      <input type="button" value="Stop" onclick="vgpuAction('stop_device','<?= $d['uuid'] ?>')">
-    <?php else: ?>
-      <input type="button" value="Start" onclick="vgpuAction('start_device','<?= $d['uuid'] ?>')">
-    <?php endif; ?>
-    <input type="button" value="Remove" onclick="vgpuAction('remove_device','<?= $d['uuid'] ?>')">
-    <i class="fa fa-code" style="cursor:pointer" title="Show VM XML" onclick="toggleXML('<?= $xmlid ?>')"></i>
-  </td>
-</tr>
-<tr><td colspan="5" style="border-bottom:none;padding:0">
-<pre class="vgpu-xml" id="<?= $xmlid ?>">&lt;hostdev mode='subsystem' type='mdev' managed='no' model='vfio-pci' display='off' ramfb='off'&gt;
-  &lt;source&gt;
-    &lt;address uuid='<?= $d['uuid'] ?>'/&gt;
-  &lt;/source&gt;
-&lt;/hostdev&gt;<br><input type="button" value="Copy" onclick="copyXML('<?= $xmlid ?>')"></pre>
-</td></tr>
-<?php endforeach; ?>
-</table>
-
-<h4>Add a vGPU</h4>
-<form method="POST" onsubmit="if(!document.querySelector('input[name=mtype]:checked')){alert('Select a profile from the table first.');return false;}">
-<input type="hidden" name="vgpu_action" value="add_device">
-<table class="vgpu-addform">
-<tr><td>GPU:</td><td>
-  <select id="add_pci" name="pci" onchange="fillTypes()">
-  <?php foreach ($gpus as $pci => $name): ?>
-    <option value="<?= htmlspecialchars($pci) ?>"><?= htmlspecialchars("$pci - $name") ?></option>
-  <?php endforeach; ?>
-  </select>
-</td></tr>
-<tr><td style="vertical-align:top">Profile:</td><td><div id="type_table"></div></td></tr>
-<tr><td>UUID:</td><td>
-  <input type="text" id="add_uuid" name="uuid" size="40" class="vgpu-mono" value="<?= htmlspecialchars($new_uuid) ?>">
-  <i class="fa fa-refresh" style="cursor:pointer" title="Generate new UUID" onclick="genUUID()"></i>
-</td></tr>
-<tr><td></td><td><input type="submit" value="Add vGPU" <?= $types_present ? "" : "disabled" ?>>
-<?= $types_present ? "" : "<i>(no mdev types available - fix the warning above first)</i>" ?></td></tr>
-</table>
-</form>
-<script>fillTypes();</script>
-</div>
-
-<div class="vgpu-panel">
-<h3><i class="fa fa-tv"></i> Attach vGPU to VM</h3>
-<p>Bind a vGPU to a virtual machine so it appears as a graphics card inside the VM (same effect as
-PVE's <code>hostpci,mdev=</code>). The change is written to the VM's <b>persistent config</b> and takes
-effect on its <b>next cold start</b> - mdev cannot be hot-plugged.</p>
-<p style="opacity:.8"><i class="fa fa-info-circle"></i> <b>Operation notes:</b> you do <b>not</b> need to
-shut the VM down to attach/detach, but if the VM is <b>running</b> you must <b>shut it down and start it
-again</b> for the change to appear (or for the vGPU to be fully released). A vGPU can only be attached to
-one VM at a time.</p>
-
-<?php if (!$devices): ?>
-<p><i>No vGPU devices configured yet - add one in the "vGPU Devices" section above first.</i></p>
-<?php elseif (!$vm_list): ?>
-<p><i>No VMs found. Create a VM first (Settings -&gt; VM Manager).</i></p>
-<?php else: ?>
-<table class="vgpu-table">
-<tr><th>vGPU</th><th>Profile</th><th>Attached VM</th><th style="width:320px">Attach / Detach</th></tr>
-<?php foreach ($devices as $d): $attached = $mdev_to_vm[$d['uuid']] ?? ''; ?>
-<tr>
-  <td class="vgpu-mono" style="font-size:.85em"><?= htmlspecialchars($d['uuid']) ?></td>
-  <td><?= htmlspecialchars($d['type']) ?></td>
-  <td><?= $attached !== '' ? "<span class='vgpu-ok'>".htmlspecialchars($attached)."</span>" : "<span class='vgpu-warn'>not attached</span>" ?></td>
-  <td>
-    <?php if ($attached !== ''): ?>
-      <form method="POST" style="margin:0;display:inline">
-        <input type="hidden" name="vgpu_action" value="detach_vm">
-        <input type="hidden" name="uuid" value="<?= htmlspecialchars($d['uuid']) ?>">
-        <input type="hidden" name="vm" value="<?= htmlspecialchars($attached) ?>">
-        <input type="submit" value="Detach from <?= htmlspecialchars($attached) ?>" onclick="return confirm('Detach this vGPU from <?= htmlspecialchars($attached) ?>?');">
-      </form>
-    <?php else: ?>
-      <form method="POST" style="margin:0;display:inline">
-        <input type="hidden" name="vgpu_action" value="attach_vm">
-        <input type="hidden" name="uuid" value="<?= htmlspecialchars($d['uuid']) ?>">
-        <select name="vm">
-          <?php foreach ($vm_list as $vm): ?>
-            <option value="<?= htmlspecialchars($vm) ?>"><?= htmlspecialchars($vm) ?></option>
-          <?php endforeach; ?>
-        </select>
-        <input type="submit" value="Attach">
-      </form>
-    <?php endif; ?>
-  </td>
-</tr>
-<?php endforeach; ?>
-</table>
-<?php endif; ?>
-</div>
-
-<div class="vgpu-panel">
-<h3><i class="fa fa-sliders-h"></i> profile_override.toml</h3>
-<p>Optional <a href="https://github.com/mbilker/vgpu_unlock-rs#readme" target="_blank">vgpu_unlock-rs profile overrides</a>
-(framebuffer size, display heads, cuda, etc.). Stored on the flash drive and applied at every boot.</p>
-<form method="POST">
-<input type="hidden" name="vgpu_action" value="save_override">
-<textarea id="override_area" name="override_content" spellcheck="false"><?= htmlspecialchars($override_content) ?></textarea><br>
-<input type="submit" value="Save Overrides">
-</form>
-</div>
-
-<?php endif; /* nvidia installed */ ?>
-</div><!-- /tab-nvidia -->
-
-<!-- ==================== Tab 3: Intel i915 SR-IOV ==================== -->
-<div id="tab-i915" class="vgpu-tab-content">
-
-<?php if (!$intel_inst): ?>
-<div class="vgpu-panel">
-<div class="vgpu-banner warn"><i class="fa fa-info-circle"></i>
-The Intel i915 SR-IOV driver is not installed yet. Install it from the <b>Drivers</b> tab first.</div>
-</div>
-<?php else: ?>
-
-<div class="vgpu-panel">
-<h3><i class="fa fa-info-circle"></i> Status</h3>
-<table class="vgpu-status">
-<tr><td>Intel GPU (PF):</td><td><?= $intel_pf ? "<span class='vgpu-mono'>".htmlspecialchars($intel_pf)."</span>" : "<span class='vgpu-bad'>none detected</span>" ?></td>
-    <td>i915 driver:</td><td><?= $i915_inst ? "<span class='vgpu-ok'>".htmlspecialchars($i915_inst)."</span>" : "<span class='vgpu-bad'>not loaded</span>" ?></td></tr>
-<tr><td>VFs active:</td><td><?= ($intel_vfs !== '') ? "<span class='vgpu-mono'>".htmlspecialchars($intel_vfs)."</span>" : "0" ?></td>
-    <td>VFs supported:</td><td><?= ($intel_total !== '') ? "<span class='vgpu-mono'>".htmlspecialchars($intel_total)."</span>" : "n/a" ?></td></tr>
-</table>
-</div>
-
-<div class="vgpu-panel">
-<h3><i class="fa fa-sliders-h"></i> Virtual Functions</h3>
-<form method="POST">
-<input type="hidden" name="vgpu_action" value="save_intel">
-<table class="vgpu-status">
-<tr><td>Number of VFs (0-<?= htmlspecialchars($intel_total !== '' ? $intel_total : '7') ?>):</td><td>
-  <input type="text" name="vf_number" size="4" value="<?= htmlspecialchars($vfnum) ?>">
-  <span style="opacity:.7">&nbsp;(applied immediately if the module is loaded, and at every boot)</span>
-</td></tr>
-<tr><td></td><td><input type="submit" value="Apply VF Count"></td></tr>
-</table>
-</form>
-</div>
-
-<div class="vgpu-panel">
-<h3><i class="fa fa-plug"></i> VF Passthrough</h3>
-<p>VFs are automatically bound to <code class="vgpu-mono">vfio-pci</code> so you can add them to VMs.
-<b>Never passthrough the PF (<?= htmlspecialchars($intel_pf ?: '00:02.0') ?>)</b> - it would crash all other VFs.</p>
-<table class="vgpu-table">
-<tr><th>PCI</th><th>Driver</th></tr>
-<?php
+$devices = vgpu_devices();
+$intel_base = $intel_pf ? "/sys/bus/pci/devices/$intel_pf" : '';
+$intel_vfs = $intel_base ? vgpu_read("$intel_base/sriov_numvfs") : '';
+$intel_total = $intel_base ? vgpu_read("$intel_base/sriov_totalvfs") : '';
 $vf_list = [];
-if ($intel_pf) {
-  $out = shell_exec("lspci -D 2>/dev/null | grep -E 'VGA compatible controller|Display controller' | grep -i intel | awk '{print \$1}' | grep -v '\\.0' | sort");
-  foreach (preg_split('/\s+/', trim($out)) as $vf) {
-    if ($vf === '') continue;
-    $drv = @readlink("/sys/bus/pci/devices/$vf/driver");
-    $drv = $drv ? basename($drv) : 'none';
-    $vf_list[] = [$vf, $drv];
-  }
+if ($intel_base) foreach (glob("$intel_base/virtfn*") ?: [] as $vf) {
+    $path = realpath($vf); if (!$path) continue;
+    $driver = @readlink("$path/driver");
+    $vf_list[] = [basename($path), $driver ? basename($driver) : ''];
 }
+$vfnum = vgpu_setting('intel_vf_number', '7');
+$unlock_on = vgpu_setting('nvidia_unlock', vgpu_setting('unlock', 'false')) === 'true';
+$override_content = (string)@file_get_contents("$vgpu_usercfg/profile_override.toml");
+$new_uuid = bin2hex(random_bytes(16));
+$new_uuid = substr($new_uuid,0,8).'-'.substr($new_uuid,8,4).'-4'.substr($new_uuid,13,3).'-8'.substr($new_uuid,17,3).'-'.substr($new_uuid,20,12);
+$boot_kernel = vgpu_boot_kernel();
+$pending_kernel = $boot_kernel !== '' && $boot_kernel !== $kernel ? $boot_kernel : '';
+$upgrade = json_decode((string)@file_get_contents('/var/tmp/my-unraid-vgpu-manager-upgrade.json'), true) ?: [];
+if ($pending_kernel !== '' && ($upgrade['kernel'] ?? '') !== $pending_kernel) $upgrade = [];
+// An old readiness result cannot cover a newly enabled driver or another series.
+if ($upgrade && (($nvidia_inst !== (($upgrade['nvidia'] ?? 'disabled') !== 'disabled')) ||
+    ($intel_inst !== (($upgrade['intel'] ?? 'disabled') !== 'disabled')) ||
+    ($nvidia_inst && $series_inst && ($upgrade['series'] ?? '') !== $series_inst) ||
+    ($nvidia_inst && ($upgrade['wanted_version'] ?? 'latest') !== vgpu_setting('driver_version', 'latest')))) $upgrade = [];
+if (($upgrade['status'] ?? '') === 'ready') {
+    foreach (['nvidia','intel'] as $driver) {
+        if (($upgrade[$driver] ?? '') !== 'ready') continue;
+        $package = $upgrade[$driver.'_package'] ?? '';
+        $cache = "$vgpu_cfgdir/packages/".explode('-', $upgrade['kernel'])[0].'/'.basename($package);
+        if ($package === '' || !is_file($cache) || !is_file($cache.'.md5')) {
+            $upgrade[$driver] = 'missing'; $upgrade['status'] = 'missing';
+        }
+    }
+}
+$target_kernel = $pending_kernel ?: (($upgrade['kernel'] ?? '') !== $kernel ? ($upgrade['kernel'] ?? '') : '');
+$action_url = "/plugins/$vgpu_plugin/include/actions.php";
+$labels = [];
+foreach (['Profile','Type','Framebuffer','Displays','Max resolution','FRL','Free','No profiles are available on this GPU.','Select a profile first.','Remove this vGPU? Detach it from VMs first.','Stop GPU workloads before restarting NVIDIA services. Continue?','Uninstall NVIDIA? Stop GPU VMs and containers first.','Uninstall Intel i915 SR-IOV? Stop VMs using its VFs first.','Detach this vGPU from {vm}? Cold-start the VM to release it.','Copied.','Copy failed. Select and copy the XML manually.','The request failed. Refresh the page and check the result before retrying.','Enter a full Unraid kernel release, for example 6.18.47-Unraid.','Installing NVIDIA driver','Updating NVIDIA driver','Uninstalling NVIDIA driver','Restarting NVIDIA services','Installing Intel driver','Updating Intel driver','Uninstalling Intel driver','Preparing drivers for the next kernel'] as $label) $labels[$label] = vgpu_t($label);
 ?>
-<?php if (!$vf_list): ?>
-<tr><td colspan="2"><i>No VFs currently created - set the VF count above.</i></td></tr>
-<?php else: foreach ($vf_list as $v): ?>
-<tr><td><?= htmlspecialchars($v[0]) ?></td>
-    <td><?= $v[1] === 'vfio-pci' ? "<span class='vgpu-ok'>vfio-pci</span>" : htmlspecialchars($v[1]) ?></td></tr>
-<?php endforeach; endif; ?>
-</table>
+<link rel="stylesheet" href="/plugins/my-unraid-vgpu-manager/include/style.css">
+<div class="vgpu-manager" lang="<?= $vgpu_language === 'zh_CN' ? 'zh-CN' : 'en' ?>">
+<div class="vgpu-heading">
+  <h2><?= vgpu_e('Unraid vGPU Manager') ?></h2>
+  <form class="vgpu-form vgpu-language" method="post" action="<?= $action_url ?>">
+    <?php vgpu_form_fields('save_language'); ?>
+    <label for="vgpu-language"><?= vgpu_e('Language') ?></label>
+    <select id="vgpu-language" name="ui_language">
+      <?php foreach (['zh_CN'=>'简体中文','en'=>'English','auto'=>vgpu_t('Follow Unraid')] as $value=>$label): ?>
+      <option value="<?= $value ?>" <?= vgpu_setting('ui_language','zh_CN') === $value ? 'selected' : '' ?>><?= vgpu_h($label) ?></option>
+      <?php endforeach; ?>
+    </select>
+    <button type="submit"><?= vgpu_e('Apply') ?></button>
+  </form>
+</div>
+<div id="vgpu-message" class="vgpu-banner" role="status" aria-live="polite" hidden></div>
+<div class="vgpu-tabs" role="tablist" aria-label="<?= vgpu_e('GPU settings') ?>">
+  <?php foreach (['drivers'=>'Drivers','nvidia'=>'NVIDIA GPU','i915'=>'Intel i915 SR-IOV'] as $tab=>$label): ?>
+  <button type="button" role="tab" id="vgpu-tab-<?= $tab ?>" aria-controls="tab-<?= $tab ?>" aria-selected="<?= $tab === 'drivers' ? 'true' : 'false' ?>" data-tab="tab-<?= $tab ?>" class="vgpu-tab <?= $tab === 'drivers' ? 'active' : '' ?>"><?= vgpu_e($label) ?></button>
+  <?php endforeach; ?>
 </div>
 
-<div class="vgpu-panel">
-<h3><i class="fa fa-terminal"></i> Boot Parameters</h3>
-<p>The following parameters must be on the syslinux append line (Settings -&gt; Boot) for SR-IOV to
-survive a reboot. The plugin does not modify syslinux automatically; add them manually:</p>
-<pre class="vgpu-mono" style="background:rgba(0,0,0,.25);padding:10px;border-radius:4px">intel_iommu=on i915.enable_guc=3 i915.max_vfs=<?= htmlspecialchars($vfnum) ?> module_blacklist=xe</pre>
-<p style="opacity:.7">Also make sure <code class="vgpu-mono">/boot/config/modprobe.d/i915.conf</code> blacklists the
-<code class="vgpu-mono">xe</code> driver so i915 owns the GPU.</p>
+<div id="tab-drivers" class="vgpu-tab-content active" role="tabpanel" aria-labelledby="vgpu-tab-drivers">
+  <section class="vgpu-panel">
+    <h3><?= vgpu_e('Driver status') ?></h3>
+    <div class="vgpu-scroll"><table class="vgpu-status">
+      <tr><th>Unraid</th><td><?= vgpu_h($unraid_v) ?></td><th><?= vgpu_e('Running kernel') ?></th><td><?= vgpu_h($kernel) ?></td></tr>
+      <tr><th>NVIDIA vGPU</th><td class="<?= $nvidia_inst ? 'vgpu-ok' : 'vgpu-muted' ?>"><?= vgpu_e($nvidia_inst ? 'Enabled' : 'Not enabled') ?></td><th><?= vgpu_e('Loaded driver') ?></th><td><?= $loaded_v !== '' ? vgpu_h($loaded_v) : vgpu_e('Not loaded') ?></td></tr>
+      <tr><th>Intel i915 SR-IOV</th><td class="<?= $intel_inst ? 'vgpu-ok' : 'vgpu-muted' ?>"><?= vgpu_e($intel_inst ? 'Enabled' : 'Not enabled') ?></td><th><?= vgpu_e('Loaded module') ?></th><td><?= vgpu_e($i915_sriov ? 'i915 with SR-IOV' : ($i915_loaded ? 'Stock i915' : 'Not loaded')) ?></td></tr>
+      <tr><th><?= vgpu_e('Intel GPU (PF)') ?></th><td><?= $intel_pf ? vgpu_h($intel_pf) : vgpu_e('Not detected') ?></td><th><?= vgpu_e('Active / supported VFs') ?></th><td><?= $intel_total !== '' ? vgpu_h(($intel_vfs ?: '0')." / $intel_total") : vgpu_e('Not available') ?></td></tr>
+    </table></div>
+    <p class="vgpu-muted"><?= vgpu_e('Install only the drivers you need. Automatic downloads and boot restoration apply only to drivers you have enabled.') ?></p>
+  </section>
+
+  <section class="vgpu-panel" id="kernel-upgrade-panel">
+    <h3><?= vgpu_e('Prepare drivers before upgrading Unraid') ?></h3>
+    <p><?= vgpu_e('After an Unraid update stages a new kernel, enabled GPU drivers are downloaded and verified before reboot. NVIDIA keeps its installed driver series.') ?></p>
+    <?php if (!$nvidia_inst && !$intel_inst): ?>
+      <div class="vgpu-banner info"><?= vgpu_e('No GPU drivers are enabled. OS updates will not download any GPU drivers; install them manually when needed.') ?></div>
+    <?php elseif ($pending_kernel): ?>
+      <div class="vgpu-banner <?= ($upgrade['status'] ?? '') === 'ready' ? 'msg' : 'warn' ?>">
+        <?= vgpu_e('Next boot kernel: {kernel}', ['kernel'=>$pending_kernel]) ?>
+        <?= vgpu_e(($upgrade['status'] ?? '') === 'ready' ? 'Enabled driver packages are ready. Reboot after the Unraid update completes.' : 'Check driver readiness before rebooting. GPU features may be unavailable if a matching package is missing.') ?>
+      </div>
+    <?php else: ?>
+      <p class="vgpu-muted"><?= vgpu_e($boot_kernel ? 'No kernel change detected on the boot drive.' : 'The boot kernel could not be read. You can enter the target kernel below.') ?></p>
+    <?php endif; ?>
+    <div class="vgpu-scroll"><table class="vgpu-table">
+      <tr><th><?= vgpu_e('Driver') ?></th><th><?= vgpu_e('Preparation status') ?></th><th><?= vgpu_e('Verified package') ?></th></tr>
+      <?php foreach (['nvidia'=>['NVIDIA vGPU',$nvidia_inst], 'intel'=>['Intel i915 SR-IOV',$intel_inst]] as $vendor=>$driver):
+        $state = $driver[1] ? ($upgrade[$vendor] ?? 'pending') : 'disabled';
+        $status_labels = ['ready'=>'Ready','disabled'=>'Not enabled — manual install','pending'=>'Not prepared','missing'=>'Missing package or download failed']; ?>
+      <tr><td><?= vgpu_h($driver[0]) ?></td><td class="<?= $state === 'ready' ? 'vgpu-ok' : ($state === 'disabled' ? 'vgpu-muted' : 'vgpu-warn') ?>"><?= vgpu_e(($upgrade['status'] ?? '') === 'downloading' && $state === 'pending' ? 'Downloading and verifying' : ($status_labels[$state] ?? 'Not prepared')) ?></td><td class="vgpu-package"><?= vgpu_h($upgrade[$vendor.'_package'] ?? '—') ?></td></tr>
+      <?php endforeach; ?>
+    </table></div>
+    <div class="vgpu-controls">
+      <label for="target-kernel"><?= vgpu_e('Target kernel') ?></label>
+      <input id="target-kernel" type="text" value="<?= vgpu_h($target_kernel) ?>" placeholder="6.18.47-Unraid" size="24">
+      <button type="button" data-command="prepare_kernel" <?= !$nvidia_inst && !$intel_inst ? 'disabled' : '' ?>><?= vgpu_e('Check and download enabled drivers') ?></button>
+    </div>
+    <p class="vgpu-muted"><?= vgpu_e('Leave the target empty to read the boot image. Prepared packages stay on the flash drive and are installed only after booting their matching kernel.') ?></p>
+  </section>
+
+  <section class="vgpu-panel">
+    <h3><?= vgpu_e('NVIDIA vGPU driver') ?></h3>
+    <?php if ($gpus): ?><p><?= vgpu_e('Detected GPUs') ?>: <?= vgpu_h(implode('; ', $gpus)) ?></p><?php endif; ?>
+    <p><?= vgpu_e($series_caps === 'both' ? 'The detected GPUs appear in both driver lists. 19.x is recommended for a new installation.' : ($series_caps === '16' ? 'The detected GPUs appear in the 16.x driver list only.' : ($series_caps === '19' ? 'The detected GPUs appear in the 19.x driver list only.' : 'No common supported series was detected. Check the GPU model and driver support before installing.'))) ?></p>
+    <p class="vgpu-muted"><?= vgpu_e('Consumer GPU unlock is limited to 16.x. GTX 9/10 and RTX 20 are supported by the upstream unlock project; RTX 30 is experimental and RTX 40 is unsupported.') ?></p>
+    <?php if (!$nvidia_inst): ?>
+      <label for="nvidia-series-pick"><?= vgpu_e('Driver series') ?></label>
+      <select id="nvidia-series-pick">
+      <?php foreach ($install_choices as $choice): ?><option value="<?= $choice ?>" <?= $choice === $series_eff ? 'selected' : '' ?>><?= vgpu_h($choice.'.x — '.($choice === '16' ? '535.x' : '580.x')) ?></option><?php endforeach; ?>
+      </select>
+      <button type="button" data-command="install_nvidia"><?= vgpu_e('Install selected series') ?></button>
+    <?php else: ?>
+      <p><?= vgpu_e('Module on disk') ?>: <?= $installed_v ? vgpu_h($installed_v) : vgpu_e('Not installed for this kernel') ?></p>
+      <div class="vgpu-controls">
+        <button type="button" data-command="update_driver" data-series="<?= vgpu_h($series_eff) ?>"><?= vgpu_e('Update / switch to {series}.x', ['series'=>$series_eff]) ?></button>
+        <button type="button" data-command="uninstall_nvidia"><?= vgpu_e('Uninstall') ?></button>
+      </div>
+      <p class="vgpu-muted"><?= vgpu_e('Choose the next install/update series in NVIDIA settings. OS upgrade preparation keeps the currently installed series.') ?></p>
+    <?php endif; ?>
+  </section>
+
+  <section class="vgpu-panel">
+    <h3><?= vgpu_e('Intel i915 SR-IOV driver') ?></h3>
+    <?php if (!$intel_pf): ?><p class="vgpu-muted"><?= vgpu_e('No Intel GPU was detected. An installed package will activate when supported hardware is present.') ?></p><?php endif; ?>
+    <?php if (!$intel_inst): ?>
+      <button type="button" data-command="install_intel"><?= vgpu_e('Install Intel i915 SR-IOV driver') ?></button>
+    <?php else: ?>
+      <button type="button" data-command="update_intel"><?= vgpu_e('Update driver') ?></button>
+      <button type="button" data-command="uninstall_intel"><?= vgpu_e('Uninstall') ?></button>
+    <?php endif; ?>
+  </section>
+  <section class="vgpu-panel">
+    <h3><?= vgpu_e('General settings') ?></h3>
+    <form class="vgpu-form" method="post" action="<?= $action_url ?>">
+      <?php vgpu_form_fields('save_settings'); ?>
+      <div class="vgpu-field"><label for="update-check"><?= vgpu_e('Check daily for driver updates') ?></label><select id="update-check" name="update_check"><?php foreach (['true'=>'Yes','false'=>'No'] as $value=>$label): ?><option value="<?= $value ?>" <?= vgpu_setting('update_check','true') === $value ? 'selected' : '' ?>><?= vgpu_e($label) ?></option><?php endforeach; ?></select></div>
+      <div class="vgpu-field"><label for="kernel-upgrade-check"><?= vgpu_e('Prepare enabled drivers automatically after an OS update') ?></label><select id="kernel-upgrade-check" name="kernel_upgrade_check"><?php foreach (['true'=>'Yes','false'=>'No'] as $value=>$label): ?><option value="<?= $value ?>" <?= vgpu_setting('kernel_upgrade_check','true') === $value ? 'selected' : '' ?>><?= vgpu_e($label) ?></option><?php endforeach; ?></select></div>
+      <button type="submit"><?= vgpu_e('Apply') ?></button>
+    </form>
+  </section>
 </div>
 
-<?php endif; /* intel installed */ ?>
-</div><!-- /tab-i915 -->
+<div id="tab-nvidia" class="vgpu-tab-content" role="tabpanel" aria-labelledby="vgpu-tab-nvidia">
+<?php if (!$nvidia_inst): ?>
+  <div class="vgpu-banner info"><?= vgpu_e('Install the NVIDIA driver from the Drivers tab first.') ?></div>
+<?php else: ?>
+  <?php if (!$types_present): ?><div class="vgpu-banner warn"><?= vgpu_e('No vGPU profiles are available. Check the loaded driver, GPU support, SR-IOV requirements and NVIDIA daemon logs. Replacing vgpuConfig.xml alone cannot add support to an incompatible driver.') ?></div><?php endif; ?>
+  <section class="vgpu-panel">
+    <h3><?= vgpu_e('NVIDIA status') ?></h3>
+    <div class="vgpu-scroll"><table class="vgpu-status">
+      <tr><th><?= vgpu_e('Loaded driver') ?></th><td><?= $loaded_v ? vgpu_h($loaded_v) : vgpu_e('Not loaded') ?></td><th>nvidia-vgpu-mgr</th><td><?= vgpu_e($mgr_running ? 'Running' : 'Stopped') ?></td></tr>
+      <tr><th><?= vgpu_e('vGPU profiles') ?></th><td><?= vgpu_e($types_present ? 'Available' : 'Not available') ?></td><th><?= vgpu_e('Installed series') ?></th><td><?= $series_inst ? vgpu_h("$series_inst.x") : vgpu_e('Unknown') ?></td></tr>
+    </table></div>
+    <button type="button" data-command="restart_services"><?= vgpu_e('Restart NVIDIA services') ?></button>
+    <p class="vgpu-muted"><?= vgpu_e('Restarting reloads the NVIDIA modules and profile list. Stop VMs and containers using this GPU first.') ?></p>
+  </section>
+  <section class="vgpu-panel">
+    <h3><?= vgpu_e('License and modules') ?></h3>
+    <form class="vgpu-form" method="post" action="<?= $action_url ?>">
+      <?php vgpu_form_fields('save_nvidia'); ?>
+      <div class="vgpu-field"><label for="license-server"><?= vgpu_e('License server (FastAPI-DLS)') ?></label><input id="license-server" name="license_server" value="<?= vgpu_h(vgpu_setting('nvidia_license_server')) ?>" placeholder="192.168.1.10" size="26"><label for="license-port"><?= vgpu_e('Port') ?></label><input id="license-port" type="number" min="1" max="65535" name="license_port" value="<?= vgpu_h(vgpu_setting('nvidia_license_port','443')) ?>" required></div>
+      <div class="vgpu-field"><label for="license-verify"><?= vgpu_e('Verify the license server HTTPS certificate') ?></label><select id="license-verify" name="license_verify"><?php foreach (['true'=>'Yes','false'=>'No — allow self-signed certificates'] as $value=>$label): ?><option value="<?= $value ?>" <?= vgpu_setting('nvidia_license_verify','false') === $value ? 'selected' : '' ?>><?= vgpu_e($label) ?></option><?php endforeach; ?></select></div>
+      <div class="vgpu-field"><label for="feature-type"><?= vgpu_e('License feature type') ?></label><select id="feature-type" name="feature_type"><?php foreach (['0'=>'0 — Virtual PC (vPC, B-series)','1'=>'1 — Virtual Workstation (vWS)','2'=>'2 — RTX Virtual Workstation (vDWS, Q-series)'] as $value=>$label): ?><option value="<?= $value ?>" <?= vgpu_setting('nvidia_feature_type','0') === (string)$value ? 'selected' : '' ?>><?= vgpu_e($label) ?></option><?php endforeach; ?></select></div>
+      <div class="vgpu-field"><label for="driver-series"><?= vgpu_e('Series for the next driver install/update') ?></label><select id="driver-series" name="driver_series"><?php foreach (['auto'=>'Auto — follow detected hardware','16'=>'16.x — 535.x','19'=>'19.x — 580.x'] as $value=>$label): ?><option value="<?= $value ?>" <?= $series_sel === (string)$value ? 'selected' : '' ?>><?= vgpu_e($label) ?></option><?php endforeach; ?></select></div>
+      <div class="vgpu-field"><label for="nvidia-unlock">vGPU unlock</label><select id="nvidia-unlock" name="unlock"><option value="false" <?= !$unlock_on ? 'selected' : '' ?>><?= vgpu_e('Disabled — native profiles') ?></option><option value="true" <?= $unlock_on ? 'selected' : '' ?>><?= vgpu_e('Enabled — consumer GPU unlock (16.x only)') ?></option></select></div>
+      <?php foreach (['uvm','modeset','drm'] as $module): ?><div class="vgpu-field"><label for="load-<?= $module ?>"><?= vgpu_e('Load module') ?> nvidia-<?= $module ?></label><select id="load-<?= $module ?>" name="load_<?= $module ?>"><?php foreach (['true'=>'Yes','false'=>'No'] as $value=>$label): ?><option value="<?= $value ?>" <?= vgpu_setting('nvidia_load_'.$module,'true') === $value ? 'selected' : '' ?>><?= vgpu_e($label) ?></option><?php endforeach; ?></select></div><?php endforeach; ?>
+      <button type="submit"><?= vgpu_e('Save NVIDIA settings') ?></button>
+    </form>
+  </section>
+  <section class="vgpu-panel">
+    <h3><?= vgpu_e('vGPU devices') ?></h3>
+    <p><?= vgpu_e('Configured devices are restored before VM autostart. Use the VM binding controls below or copy the hostdev XML.') ?></p>
+    <div class="vgpu-scroll"><table class="vgpu-table">
+      <tr><th>UUID</th><th>GPU / <?= vgpu_e('Profile') ?></th><th><?= vgpu_e('Status') ?></th><th><?= vgpu_e('Actions') ?></th></tr>
+      <?php if (!$devices): ?><tr><td colspan="4"><?= vgpu_e('No vGPU devices configured. Add one below.') ?></td></tr><?php endif; ?>
+      <?php foreach ($devices as $i=>$device): ?>
+      <tr><td class="vgpu-mono"><?= vgpu_h($device['uuid']) ?></td><td><?= vgpu_h($device['pci'].' / '.$device['type']) ?></td><td><?= vgpu_e($device['running'] ? 'Running' : 'Stopped') ?></td><td class="vgpu-controls">
+        <button type="button" data-device-action="<?= $device['running'] ? 'stop_device' : 'start_device' ?>" data-uuid="<?= vgpu_h($device['uuid']) ?>"><?= vgpu_e($device['running'] ? 'Stop' : 'Start') ?></button>
+        <button type="button" data-device-action="remove_device" data-uuid="<?= vgpu_h($device['uuid']) ?>"><?= vgpu_e('Remove') ?></button>
+        <button type="button" data-show-xml="xml-<?= $i ?>">XML</button>
+      </td></tr>
+      <tr id="xml-<?= $i ?>" hidden><td colspan="4"><pre class="vgpu-xml" id="xml-code-<?= $i ?>">&lt;hostdev mode='subsystem' type='mdev' managed='no' model='vfio-pci'&gt;
+  &lt;source&gt;
+    &lt;address uuid='<?= vgpu_h($device['uuid']) ?>'/&gt;
+  &lt;/source&gt;
+&lt;/hostdev&gt;</pre><button type="button" data-copy-xml="xml-code-<?= $i ?>"><?= vgpu_e('Copy XML') ?></button></td></tr>
+      <?php endforeach; ?>
+    </table></div>
+    <h4><?= vgpu_e('Add a vGPU') ?></h4>
+    <form class="vgpu-form" id="vgpu-add-form" method="post" action="<?= $action_url ?>">
+      <?php vgpu_form_fields('add_device'); ?>
+      <div class="vgpu-field"><label for="add-pci">GPU</label><select id="add-pci" name="pci"><?php foreach ($gpus as $pci=>$name): ?><option value="<?= vgpu_h($pci) ?>"><?= vgpu_h($name) ?></option><?php endforeach; ?></select></div>
+      <div id="type-table" class="vgpu-scroll"></div>
+      <div class="vgpu-field"><label for="add-uuid">UUID</label><input id="add-uuid" name="uuid" class="vgpu-mono" size="38" value="<?= vgpu_h($new_uuid) ?>" required><button type="button" id="generate-uuid"><?= vgpu_e('Generate UUID') ?></button></div>
+      <button type="submit" <?= !$types_present ? 'disabled' : '' ?>><?= vgpu_e('Add vGPU') ?></button>
+    </form>
+    <form id="vgpu-device-form" class="vgpu-form" method="post" action="<?= $action_url ?>" hidden><?php vgpu_form_fields(''); ?><input type="hidden" name="uuid" value=""></form>
+  </section>
+  <section class="vgpu-panel">
+    <h3><?= vgpu_e('Bind vGPU to a virtual machine') ?></h3>
+    <p><?= vgpu_e('Bindings change the persistent VM configuration. Shut down and start the VM again to apply a binding or release a detached device; a guest reboot is not enough.') ?></p>
+    <?php if (!$devices || !$vm_list): ?><p class="vgpu-muted"><?= vgpu_e('Create a vGPU and a virtual machine before binding them.') ?></p><?php else: ?>
+    <div class="vgpu-scroll"><table class="vgpu-table">
+      <tr><th>vGPU</th><th><?= vgpu_e('Configured VM') ?></th><th><?= vgpu_e('Currently in use by') ?></th><th><?= vgpu_e('Actions') ?></th></tr>
+      <?php foreach ($devices as $device): $attached = $mdev_to_vm[$device['uuid']] ?? []; $live = $live_mdev_to_vm[$device['uuid']] ?? []; ?>
+      <tr><td class="vgpu-mono"><?= vgpu_h($device['uuid']) ?></td><td><?= $attached ? vgpu_h(implode(', ', $attached)) : vgpu_e('Not attached') ?></td><td><?= $live ? vgpu_h(implode(', ', $live)) : '—' ?></td><td>
+        <?php if ($attached): foreach ($attached as $vm): ?>
+          <form class="vgpu-form vgpu-inline" method="post" action="<?= $action_url ?>" data-detach-vm="<?= vgpu_h($vm) ?>"><?php vgpu_form_fields('detach_vm'); ?><input type="hidden" name="uuid" value="<?= vgpu_h($device['uuid']) ?>"><input type="hidden" name="vm" value="<?= vgpu_h($vm) ?>"><button type="submit"><?= vgpu_e('Detach from {vm}', ['vm'=>$vm]) ?></button></form>
+        <?php endforeach; else: ?>
+          <form class="vgpu-form vgpu-inline" method="post" action="<?= $action_url ?>"><?php vgpu_form_fields('attach_vm'); ?><input type="hidden" name="uuid" value="<?= vgpu_h($device['uuid']) ?>"><select name="vm" aria-label="<?= vgpu_e('Virtual machine') ?>"><?php foreach ($vm_list as $vm): ?><option value="<?= vgpu_h($vm) ?>"><?= vgpu_h($vm) ?></option><?php endforeach; ?></select><button type="submit"><?= vgpu_e('Attach') ?></button></form>
+        <?php endif; ?>
+      </td></tr>
+      <?php endforeach; ?>
+    </table></div>
+    <?php endif; ?>
+  </section>
+  <section class="vgpu-panel">
+    <h3><?= vgpu_e('Profile overrides') ?></h3>
+    <p><?= vgpu_e('Optional profile_override.toml settings for framebuffer size, display heads and CUDA. Saved on the flash drive.') ?> <a href="https://github.com/mbilker/vgpu_unlock-rs#readme" target="_blank" rel="noopener noreferrer"><?= vgpu_e('Format reference') ?></a></p>
+    <form class="vgpu-form" method="post" action="<?= $action_url ?>"><?php vgpu_form_fields('save_override'); ?><label class="vgpu-sr-only" for="override-area">profile_override.toml</label><textarea id="override-area" name="override_content" spellcheck="false"><?= vgpu_h($override_content) ?></textarea><button type="submit"><?= vgpu_e('Save overrides') ?></button></form>
+  </section>
+<?php endif; ?>
+</div>
+
+<div id="tab-i915" class="vgpu-tab-content" role="tabpanel" aria-labelledby="vgpu-tab-i915">
+<?php if (!$intel_inst): ?>
+  <div class="vgpu-banner info"><?= vgpu_e('Install the Intel driver from the Drivers tab first.') ?></div>
+<?php else: ?>
+  <section class="vgpu-panel">
+    <h3><?= vgpu_e('Intel SR-IOV status') ?></h3>
+    <p><?= vgpu_e('Intel GPU (PF)') ?>: <?= vgpu_h($intel_pf ?: '—') ?> · <?= vgpu_e('Active / supported VFs') ?>: <?= vgpu_h(($intel_vfs ?: '0').' / '.($intel_total ?: '—')) ?></p>
+    <form class="vgpu-form" method="post" action="<?= $action_url ?>"><?php vgpu_form_fields('save_intel'); ?>
+      <div class="vgpu-field"><label for="vf-number"><?= vgpu_e('Number of VFs') ?></label><input id="vf-number" type="number" name="vf_number" min="0" max="<?= vgpu_h($intel_total !== '' ? $intel_total : '7') ?>" value="<?= vgpu_h($vfnum) ?>" required><button type="submit"><?= vgpu_e('Apply VF count') ?></button></div>
+    </form>
+    <p class="vgpu-muted"><?= vgpu_e('The count is applied immediately and saved only on success. Stop VMs using these VFs before changing it. Reapplying the same count keeps existing VFs.') ?></p>
+  </section>
+  <section class="vgpu-panel">
+    <h3><?= vgpu_e('VF passthrough') ?></h3>
+    <p><?= vgpu_e('VFs are bound to vfio-pci for VM passthrough. Never pass through the physical function (PF): {pci}.', ['pci'=>$intel_pf ?: '00:02.0']) ?></p>
+    <div class="vgpu-scroll"><table class="vgpu-table"><tr><th>PCI</th><th><?= vgpu_e('Driver') ?></th></tr>
+      <?php if (!$vf_list): ?><tr><td colspan="2"><?= vgpu_e('No VFs are currently available.') ?></td></tr><?php endif; ?>
+      <?php foreach ($vf_list as $vf): ?><tr><td><?= vgpu_h($vf[0]) ?></td><td><?= $vf[1] ? vgpu_h($vf[1]) : vgpu_e('Not bound') ?></td></tr><?php endforeach; ?>
+    </table></div>
+  </section>
+  <section class="vgpu-panel">
+    <h3><?= vgpu_e('Boot parameters') ?></h3>
+    <p><?= vgpu_e('Enable IOMMU in firmware and add these parameters to the active Unraid boot entry. The plugin manages its own i915 modprobe configuration.') ?></p>
+    <pre class="vgpu-xml">intel_iommu=on i915.enable_guc=3 i915.max_vfs=<?= vgpu_h($vfnum) ?> module_blacklist=xe</pre>
+  </section>
+<?php endif; ?>
+</div>
+</div>
+<script>window.vgpuPage = <?= vgpu_json(['gpuTypes'=>$gpu_types,'labels'=>$labels,'language'=>$vgpu_language]) ?>;</script>
+<script src="/plugins/my-unraid-vgpu-manager/include/ui.js"></script>

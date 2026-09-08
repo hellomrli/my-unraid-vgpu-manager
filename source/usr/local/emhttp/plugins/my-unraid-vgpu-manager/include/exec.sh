@@ -1,165 +1,84 @@
 #!/bin/bash
-# exec.sh - helper functions for the my-unraid-vgpu-manager plugin page
+# Allowlisted UI operations. Failures retain their exit status all the way to UI.
+source "$(dirname "$(readlink -f "$0")")/common.sh"
+RC="$EMHTTP/scripts/rc.vgpu"
 
-PLUGIN="my-unraid-vgpu-manager"
-PLGCFG="/boot/config/plugins/${PLUGIN}"
-SETTINGS="${PLGCFG}/settings.cfg"
-EMHTTP="/usr/local/emhttp/plugins/${PLUGIN}"
-RC="${EMHTTP}/scripts/rc.vgpu"
-KERNEL_V="$(uname -r)"
-VERSIONS_CACHE_BASE="/tmp/vgpu_driver"
-CRON_LINE="${EMHTTP}/include/update-check.sh"
-
-# asset-name glob per driver series (the release carries both side by side)
-nvidia_glob_for() {
-  case "${1}" in
-    19) echo "580." ;;
-    *)  echo "535." ;;
-  esac
-}
-
-versions_cache_for() {
-  echo "${VERSIONS_CACHE_BASE}_$(nvidia_glob_for "$1" | tr -d '.')"
-}
-
-set_setting() {
-  if grep -q "^${1}=" "${SETTINGS}" 2>/dev/null; then
-    sed -i "s|^${1}=.*|${1}=${2}|" "${SETTINGS}"
-  else
-    echo "${1}=${2}" >> "${SETTINGS}"
+configure_cron() {
+  local tmp
+  tmp="$(mktemp)" || return 1
+  crontab -l 2>/dev/null | grep -Fv -- "$EMHTTP/include/update-check.sh" |
+    grep -Fv -- "$EMHTTP/include/upgrade-check.sh" > "$tmp"
+  if [ "$(setting update_check)" = true ]; then
+    printf '17 9 * * * %s/include/update-check.sh >/dev/null 2>&1\n' "$EMHTTP" >> "$tmp"
   fi
-}
-
-# refresh the cache of driver versions available for this kernel + series
-# (throttled to 5 min)
-update() {
-  local series="${1:-16}"
-  local cache; cache="$(versions_cache_for "${series}")"
-  if [ -f "${cache}" ]; then
-    local age=$(( $(date +%s) - $(stat -c %Y "${cache}") ))
-    [ ${age} -lt 300 ] && return 0
+  if [ "$(setting kernel_upgrade_check)" != false ]; then
+    printf '* * * * * %s/include/upgrade-check.sh auto >>/var/log/%s-upgrade.log 2>&1\n' "$EMHTTP" "$PLUGIN" >> "$tmp"
   fi
-  local glob; glob="$(nvidia_glob_for "${series}")"
-  # asset names: nvidia-<driver version>-<kernel>-Unraid-<b>.txz
-  wget -T 15 -qO- "https://api.github.com/repos/hellomrli/my-nvidia-vgpu-driver/releases/tags/${KERNEL_V}" 2>/dev/null \
-    | jq -r '.assets[].name' 2>/dev/null \
-    | grep -F "nvidia-${glob}" | grep -E -v '\.md5$' \
-    | cut -d '-' -f2 | sort -V | uniq | tail -10 > "${cache}"
-  if [ ! -s "${cache}" ]; then
-    modinfo -F version nvidia 2>/dev/null | head -1 > "${cache}"
-  fi
-}
-
-get_latest_version() {
-  local series="${1:-16}"
-  echo -n "$(tail -1 "$(versions_cache_for "${series}")" 2>/dev/null)"
-}
-
-get_available_versions() {
-  local series="${1:-16}"
-  cat "$(versions_cache_for "${series}")" 2>/dev/null
-}
-
-get_installed_version() {
-  echo -n "$(modinfo -F version nvidia 2>/dev/null | head -1)"
-}
-
-get_selected_version() {
-  echo -n "$(grep -m1 '^driver_version=' "${SETTINGS}" 2>/dev/null | cut -d '=' -f2)"
-}
-
-# download (if needed) and live-install a driver version; runs inside an openBox window
-update_driver() {
-  local series="${1:-16}" want="${2:-latest}"
-  sed -i "/^driver_version=/c\driver_version=${want}" "${SETTINGS}" 2>/dev/null
-  set_setting nvidia_series "${series}"
-  if "${EMHTTP}/include/download.sh" nvidia "${series}" "${want}"; then
-    echo
-    "${RC}" update
-  else
-    exit 1
-  fi
-}
-
-restart_services() {
-  echo "-----------------------Restarting vGPU services...------------------------------"
-  "${RC}" restart
-  echo
-  "${RC}" status
-  echo
-  echo "----------------------------------DONE------------------------------------------"
-}
-
-apply_devices() {
-  "${RC}" apply
+  crontab "$tmp"
+  local result=$?
+  rm -f "$tmp"
+  return "$result"
 }
 
 change_update_check() {
-  sed -i "/^update_check=/c\update_check=${1}" "${SETTINGS}"
-  if [ "${1}" = "true" ]; then
-    if ! crontab -l 2>/dev/null | grep -q "${CRON_LINE}"; then
-      (crontab -l 2>/dev/null; echo "$((RANDOM % 59)) $(shuf -i 8-9 -n 1) * * * ${CRON_LINE} &>/dev/null 2>&1") | crontab -
-    fi
-  else
-    crontab -l 2>/dev/null | grep -v "${CRON_LINE}" | crontab -
-  fi
+  case "${1:-}" in true|false) ;; *) return 1 ;; esac
+  set_setting update_check "$1" && configure_cron
 }
-
-# --- on-demand driver install / uninstall (page buttons) ---
 
 install_nvidia() {
-  local series="${1:-16}"
-  set_setting nvidia_series "${series}"
-  echo "-----------------------Installing NVIDIA vGPU driver (series ${series})...-----------------------"
-  "${EMHTTP}/include/download.sh" nvidia "${series}" latest || true
-  "${RC}" nvidia_install
-  echo
-  "${RC}" status
-  echo
-  echo "----------------------------------DONE------------------------------------------"
+  local series="${1:-$(nvidia_series)}" pkg
+  series_prefix "$series" >/dev/null || return 1
+  operation_lock || return 1
+  "$EMHTTP/include/download.sh" nvidia "$series" latest || return 1
+  pkg="$(find_package nvidia "$KERNEL_V" "$series")" || return 1
+  set_setting nvidia_series "$series" && set_setting driver_version latest || return 1
+  "$RC" nvidia_install "$pkg"
 }
 
-uninstall_nvidia() {
-  echo "-----------------------Uninstalling NVIDIA vGPU driver...----------------------"
-  "${RC}" nvidia_uninstall
-  echo
-  echo "----------------------------------DONE------------------------------------------"
+update_driver() {
+  local series="${1:-$(nvidia_series)}" want="${2:-latest}" pkg
+  series_prefix "$series" >/dev/null && valid_version "$want" || return 1
+  [ "$(setting nvidia_installed)" = true ] || { echo 'ERROR: NVIDIA is not enabled'; return 1; }
+  operation_lock || return 1
+  "$EMHTTP/include/download.sh" nvidia "$series" "$want" --refresh || return 1
+  pkg="$(find_package nvidia "$KERNEL_V" "$series" "$want")" || return 1
+  set_setting nvidia_series "$series" && set_setting driver_version "$want" || return 1
+  "$RC" nvidia_update "$pkg"
 }
 
 install_intel() {
-  echo "-----------------------Installing Intel i915 SR-IOV driver...------------------"
-  "${EMHTTP}/include/download.sh" i915 latest || true
-  "${RC}" intel_install
-  echo
-  "${RC}" status
-  echo
-  echo "----------------------------------DONE------------------------------------------"
+  local pkg
+  operation_lock || return 1
+  "$EMHTTP/include/download.sh" i915 latest || return 1
+  pkg="$(find_package i915 "$KERNEL_V")" || return 1
+  "$RC" intel_install "$pkg"
 }
 
-uninstall_intel() {
-  echo "-----------------------Uninstalling Intel i915 SR-IOV driver...----------------"
-  "${RC}" intel_uninstall
-  echo
-  echo "----------------------------------DONE------------------------------------------"
+update_intel() {
+  local pkg
+  [ "$(setting intel_installed)" = true ] || { echo 'ERROR: Intel is not enabled'; return 1; }
+  operation_lock || return 1
+  "$EMHTTP/include/download.sh" i915 latest --refresh || return 1
+  pkg="$(find_package i915 "$KERNEL_V")" || return 1
+  "$RC" intel_install "$pkg"
 }
 
-save_nvidia_settings() {
-  # called from the page: persists license + module options, then applies them
-  sed -i "/^nvidia_license_server=/c\nvidia_license_server=${1}" "${SETTINGS}" 2>/dev/null
-  sed -i "/^nvidia_license_port=/c\nvidia_license_port=${2}" "${SETTINGS}" 2>/dev/null
-  sed -i "/^nvidia_feature_type=/c\nvidia_feature_type=${3}" "${SETTINGS}" 2>/dev/null
-  sed -i "/^nvidia_unlock=/c\nvidia_unlock=${4}" "${SETTINGS}" 2>/dev/null
-  sed -i "/^nvidia_load_uvm=/c\nvidia_load_uvm=${5}" "${SETTINGS}" 2>/dev/null
-  sed -i "/^nvidia_load_modeset=/c\nvidia_load_modeset=${6}" "${SETTINGS}" 2>/dev/null
-  sed -i "/^nvidia_load_drm=/c\nvidia_load_drm=${7}" "${SETTINGS}" 2>/dev/null
-  # apply the license immediately if the driver is running
-  "${RC}" nvidia_license 2>/dev/null
-}
-
-save_intel_settings() {
-  sed -i "/^intel_vf_number=/c\intel_vf_number=${1}" "${SETTINGS}" 2>/dev/null
-  # hot-apply if i915 is loaded with SR-IOV
-  "${RC}" intel_set_vfs "${1}" 2>/dev/null
-}
-
-"$@"
+case "${1:-}" in
+  configure_cron) configure_cron; exit $? ;;
+  change_update_check) change_update_check "${2:-}"; exit $? ;;
+  get_boot_kernel) exec php "$EMHTTP/include/kernel.php" ;;
+  prepare_kernel) exec "$EMHTTP/include/upgrade-check.sh" prepare "${2:-}" ;;
+  install_nvidia|update_driver|install_intel|update_intel)
+    action="$1"; shift; "$action" "$@"; result=$? ;;
+  uninstall_nvidia) "$RC" nvidia_uninstall; result=$? ;;
+  uninstall_intel) "$RC" intel_uninstall; result=$? ;;
+  restart_services) "$RC" restart; result=$? ;;
+  apply_devices) "$RC" apply; result=$? ;;
+  *) echo 'ERROR: unknown operation' >&2; exit 1 ;;
+esac
+if [ "$result" = 0 ]; then
+  bilingual 'Operation completed. Close this window to refresh the status.' '操作完成，关闭窗口后刷新状态。'
+else
+  bilingual 'ERROR: operation failed. Check the messages above before retrying.' '错误：操作未完成，请查看上方日志后重试。' >&2
+fi
+exit "$result"

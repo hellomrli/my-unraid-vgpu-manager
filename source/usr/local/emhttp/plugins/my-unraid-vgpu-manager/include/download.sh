@@ -1,188 +1,77 @@
 #!/bin/bash
-# download.sh [nvidia|i915] [version] - make sure the requested driver packages
-# for the running kernel are present on the flash drive.
-# Called from the .plg on boot/install and from the plugin page before an update.
-#
-# Two independent sources:
-#   nvidia - NVIDIA vGPU merged driver from hellomrli/my-nvidia-vgpu-driver (tag = kernel)
-#   i915   - Intel i915 SR-IOV driver from hellomrli/my-i915-sriov-driver (tag = kernel)
-#
-# LOCAL-FIRST behaviour: a package placed manually in
-#   /boot/config/plugins/my-unraid-vgpu-manager/packages/<kernel-major>/
-# is used as-is (no download). GitHub is only consulted when no local package
-# exists - and if GitHub is unreachable the local package is still used.
+# download.sh nvidia <16|19> [version] [--kernel release] [--refresh]
+# download.sh i915 [version] [--kernel release] [--refresh]
+# Installs may use verified local packages. --refresh always consults GitHub.
+set -o pipefail
+source "$(dirname "$(readlink -f "$0")")/common.sh"
 
-PLUGIN="my-unraid-vgpu-manager"
-PLGCFG="/boot/config/plugins/${PLUGIN}"
-SETTINGS="${PLGCFG}/settings.cfg"
-KERNEL_V="$(uname -r)"
-PKGDIR="${PLGCFG}/packages/${KERNEL_V%%-*}"
-NVIDIA_REPO="hellomrli/my-nvidia-vgpu-driver"
-I915_REPO="hellomrli/my-i915-sriov-driver"
-
-# pick source: first arg is nvidia (default) or i915
-SRC="${1:-nvidia}"
-[ "${SRC}" = "i915" ] || SRC="nvidia"
-shift 2>/dev/null || true
-
-# nvidia: optional series (16|19) BEFORE the version - the driver repo
-# releases carry both branches side by side (nvidia-535.* and nvidia-580.*).
+SOURCE="${1:-nvidia}"
+[ $# -eq 0 ] || shift
 SERIES=""
-if [ $# -ge 1 ]; then
-  case "$1" in
-    16|19) SERIES="$1"; shift ;;
-  esac
-fi
-
-WANT="${1:-$(grep -m1 '^driver_version=' "${SETTINGS}" 2>/dev/null | cut -d '=' -f2)}"
-[ -n "${WANT}" ] || WANT="latest"
-
-# nvidia series -> asset glob. "auto"/unset follows the installed driver,
-# defaulting to 16.x when no driver is installed (version prefix).
-if [ "${SRC}" = "nvidia" ]; then
-  if [ -z "${SERIES}" ] || [ "${SERIES}" = "auto" ]; then
-    inst="$(modinfo -F version nvidia 2>/dev/null | head -1)"
-    case "${inst}" in
-      580.*) SERIES="19" ;;
-      *)     SERIES="16" ;;
-    esac
-  fi
-  case "${SERIES}" in
-    19) NVGLOB="nvidia-580." ;;
-    *)  NVGLOB="nvidia-535." ;;
-  esac
-  CLEAN_GLOB="${NVGLOB}"
-else
-  CLEAN_GLOB="i915-"
-fi
-
-mkdir -p "${PKGDIR}"
-
-md5_ok() {
-  [ -f "${1}" ] && [ -f "${1}.md5" ] || return 1
-  [ "$(md5sum "${1}" | awk '{print $1}')" = "$(awk '{print $1}' "${1}.md5")" ]
-}
-
-# nvidia: packages named nvidia-<ver>-<kernel>-Unraid-<b>.txz, Release tag = kernel
-nvidia_source() {
-  DL_URL="https://github.com/${NVIDIA_REPO}/releases/download/${KERNEL_V}"
-  API_URL="https://api.github.com/repos/${NVIDIA_REPO}/releases/tags/${KERNEL_V}"
-  PATTERN="^${NVGLOB}"
-  # cleanup glob scoped to the series so both series' packages can coexist
-  PREFIX="${NVGLOB}"
-  LOCAL_PKG="$(ls "${PKGDIR}"/${NVGLOB}*.txz 2>/dev/null | sort -V | tail -1)"
-}
-
-# i915: packages named i915-sriov-<ver>-<kernel>-Unraid-<b>.txz.
-# The Release tag is NOT the bare kernel; find the newest release whose assets
-# contain an i915-sriov-<...>-<kernel>-Unraid-*.txz.
-i915_source() {
-  API_URL="https://api.github.com/repos/${I915_REPO}/releases"
-  PATTERN="i915-sriov-.*-${KERNEL_V}-Unraid-"
-  # newest release matching this kernel (releases are listed newest-first)
-  PKG="$(wget -T 15 -qO- "${API_URL}?per_page=20" 2>/dev/null \
-    | jq -r --arg kv "${KERNEL_V}" '[.[] | .tag_name as $t | .assets[].name | select(startswith("i915-sriov-") and contains("-" + $kv + "-") and endswith(".txz")) | {tag: $t, name: .}] | .[0] | "\(.tag)|\(.name)"' 2>/dev/null)"
-  if [ -n "${PKG}" ]; then
-    I915_TAG="${PKG%%|*}"
-    I915_PKG="${PKG#*|}"
-    DL_URL="https://github.com/${I915_REPO}/releases/download/${I915_TAG}"
-    API_URL="https://api.github.com/repos/${I915_REPO}/releases/tags/${I915_TAG}"
-  fi
-  LOCAL_PKG="$(ls "${PKGDIR}"/i915-*.txz 2>/dev/null | sort -V | tail -1)"
-  PREFIX="i915-"
-}
-
-case "${SRC}" in
-  nvidia) nvidia_source ;;
-  i915)   i915_source ;;
+case "$SOURCE" in
+  nvidia)
+    SERIES="${1:-$(nvidia_series)}"
+    case "$SERIES" in 16|19) ;; *) echo 'ERROR: expected series 16 or 19' >&2; exit 1 ;; esac
+    [ $# -eq 0 ] || shift ;;
+  i915) ;;
+  *) echo 'ERROR: expected nvidia or i915' >&2; exit 1 ;;
 esac
+WANT=latest
+if [ $# -gt 0 ] && [[ "$1" != --* ]]; then WANT="$1"; shift; fi
+TARGET_KERNEL="$KERNEL_V"
+REFRESH=false
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --kernel) [ $# -ge 2 ] || exit 1; TARGET_KERNEL="$2"; shift 2 ;;
+    --refresh) REFRESH=true; shift ;;
+    *) echo "ERROR: unknown argument $1" >&2; exit 1 ;;
+  esac
+done
+valid_kernel "$TARGET_KERNEL" && valid_version "$WANT" || {
+  echo 'ERROR: invalid kernel or driver version' >&2; exit 1;
+}
+PKGDIR="$(package_dir "$TARGET_KERNEL")"
+mkdir -p "$PKGDIR" || exit 1
+exec 7>"${PKGDIR}/.download-${SOURCE}-${SERIES}.lock"
+flock -n 7 || { echo 'ERROR: this driver is already downloading' >&2; exit 1; }
 
-# Local-first: if a package for this kernel already exists on the flash drive,
-# verify it and use it without touching the network.
-if [ -n "${LOCAL_PKG}" ] && [ "${WANT}" = "latest" ]; then
-  if md5_ok "${LOCAL_PKG}"; then
-    echo "-------Using local ${SRC} package $(basename "${LOCAL_PKG}") (checksum OK)-------"
+if [ "$REFRESH" = false ]; then
+  LOCAL_PKG="$(find_package "$SOURCE" "$TARGET_KERNEL" "$SERIES" "$WANT")"
+  if [ -n "$LOCAL_PKG" ]; then
+    bilingual "Using verified local package: ${LOCAL_PKG##*/}" "使用已校验的本地驱动包：${LOCAL_PKG##*/}"
     exit 0
-  else
-    echo "-----WARNING: local ${SRC} package $(basename "${LOCAL_PKG}") failed checksum, re-downloading-----"
   fi
 fi
 
-# list of available package assets for this kernel (may be empty when offline)
-if [ "${SRC}" = "nvidia" ]; then
-  AVAIL="$(wget -T 15 -qO- "${API_URL}" | jq -r '.assets[].name' 2>/dev/null | grep "${PATTERN}" | grep -E -v '\.md5$' | sort -V)"
-else
-  # i915: use the release found above (if any)
-  AVAIL=""
-  [ -n "${I915_PKG}" ] && AVAIL="${I915_PKG}"
+AVAIL="$(release_assets "$SOURCE" "$TARGET_KERNEL" "$SERIES" "$WANT")" || {
+  bilingual 'ERROR: could not query GitHub. No driver has been installed or updated.' '错误：无法查询 GitHub，未安装或更新任何驱动。' >&2
+  exit 1
+}
+PKG="$(printf '%s\n' "$AVAIL" | tail -1)"
+[ -n "$PKG" ] || {
+  bilingual "ERROR: no matching ${SOURCE} package for ${TARGET_KERNEL} (version ${WANT})." "错误：未找到适用于 ${TARGET_KERNEL} 的 ${SOURCE} 驱动包（版本 ${WANT}）。" >&2
+  exit 1
+}
+if md5_ok "${PKGDIR}/${PKG}"; then
+  bilingual "The requested package is already downloaded and verified: $PKG" "所需驱动包已下载并通过校验：$PKG"
+  exit 0
 fi
-
-if [ -z "${AVAIL}" ]; then
-  if [ -n "${LOCAL_PKG}" ]; then
-    echo "---Can't reach GitHub, using local ${SRC} package $(basename "${LOCAL_PKG}")---"
-    exit 0
-  fi
-  echo
-  echo "-----ERROR - ERROR - ERROR - ERROR - ERROR - ERROR - ERROR - ERROR - ERROR------"
-  echo "----No ${SRC} driver package found for kernel ${KERNEL_V} and no local copy exists----"
-  echo "---Check your internet connection, or wait for a build for this kernel to be---"
-  echo "---------------published, then reinstall/update the plugin.--------------------"
+case "$SOURCE" in nvidia) REPO="$NVIDIA_REPO" ;; i915) REPO="$I915_REPO" ;; esac
+DL_URL="https://github.com/${REPO}/releases/download/${TARGET_KERNEL}"
+STAGE="$(mktemp -d "${PKGDIR}/.download.XXXXXX")" || exit 1
+trap 'rm -rf -- "$STAGE"' EXIT
+trap 'exit 1' HUP INT TERM
+bilingual "Downloading $PKG. Wait for verification before rebooting." "正在下载 $PKG，请等待校验完成后再重启。"
+if ! curl -fL --connect-timeout 15 --max-time 1800 --speed-time 60 --speed-limit 1024 \
+     --retry 2 --output "${STAGE}/${PKG}" "${DL_URL}/${PKG}" ||
+   ! curl -fsSL --connect-timeout 10 --max-time 30 --output "${STAGE}/${PKG}.md5" "${DL_URL}/${PKG}.md5" ||
+   ! md5_ok "${STAGE}/${PKG}"; then
+  bilingual "ERROR: download or checksum failed: $PKG" "错误：驱动包下载或校验失败：$PKG" >&2
   exit 1
 fi
-
-# packages are named <vendor>-<driver version>-<kernel>-Unraid-1.txz
-if [ "${WANT}" = "latest" ]; then
-  PKG="$(echo "${AVAIL}" | tail -1)"
-else
-  PKG="$(echo "${AVAIL}" | grep -F -- "-${WANT}-" | sort -V | tail -1)"
-  if [ -z "${PKG}" ]; then
-    echo "---Requested driver v${WANT} not found for this kernel, falling back to latest---"
-    PKG="$(echo "${AVAIL}" | tail -1)"
-    sed -i '/^driver_version=/c\driver_version=latest' "${SETTINGS}" 2>/dev/null
-  fi
-fi
-PKG_V="$(echo "${PKG}" | sed -E 's/^(nvidia|i915-sriov)-([0-9.]+).*/\2/')"
-
-if md5_ok "${PKGDIR}/${PKG}"; then
-  echo "-------${SRC} driver package v${PKG_V} already downloaded, checksum OK-------"
-else
-  echo
-  echo "+==============================================================================="
-  echo "| Downloading ${SRC} driver package v${PKG_V} for kernel ${KERNEL_V}"
-  echo "| Please don't close this window until it is finished!"
-  echo "+==============================================================================="
-  echo
-  rm -f "${PKGDIR}/${PKG}" "${PKGDIR}/${PKG}.md5"
-  if wget -q --show-progress --progress=bar:force:noscroll -O "${PKGDIR}/${PKG}" "${DL_URL}/${PKG}" &&
-     wget -q -O "${PKGDIR}/${PKG}.md5" "${DL_URL}/${PKG}.md5" &&
-     md5_ok "${PKGDIR}/${PKG}"; then
-    echo
-    echo "----------Successfully downloaded ${SRC} driver package v${PKG_V}----------"
-  else
-    rm -f "${PKGDIR}/${PKG}" "${PKGDIR}/${PKG}.md5"
-    echo
-    echo "-----ERROR - ERROR - ERROR - ERROR - ERROR - ERROR - ERROR - ERROR - ERROR------"
-    echo "-------Download or checksum of ${SRC} driver package v${PKG_V} failed!----------------"
-    if [ -n "${LOCAL_PKG}" ]; then
-      echo "---------Keeping existing local package $(basename "${LOCAL_PKG}")---------"
-      exit 0
-    fi
-    exit 1
-  fi
-fi
-
-# remove packages for other kernels and older builds of THIS driver type.
-# Both drivers (nvidia + i915) share the packages/<kernel>/ directory, so the
-# cleanup must be scoped to the current PREFIX - deleting the other driver's
-# package would break its later install/update.
-for d in "${PLGCFG}/packages/"*/; do
-  [ "${d}" = "${PKGDIR}/" ] || rm -f "${d}"/${PREFIX}*.txz "${d}"/${PREFIX}*.md5 2>/dev/null
-done
-for f in "${PKGDIR}"/${PREFIX}*; do
-  [ -e "${f}" ] || continue
-  case "$(basename "${f}")" in
-    "${PKG}"|"${PKG}.md5") ;;
-    *) rm -f "${f}" ;;
-  esac
-done
-exit 0
+# Publish only complete files. Retain other drivers, branches, the running
+# kernel, rollback kernels and pre-downloaded upgrade kernels.
+mv -f -- "${STAGE}/${PKG}.md5" "${PKGDIR}/${PKG}.md5" &&
+  mv -f -- "${STAGE}/${PKG}" "${PKGDIR}/${PKG}" || exit 1
+sync -f "$PKGDIR" 2>/dev/null || sync
+bilingual "Downloaded and verified: $PKG" "驱动包已下载并通过校验：$PKG"

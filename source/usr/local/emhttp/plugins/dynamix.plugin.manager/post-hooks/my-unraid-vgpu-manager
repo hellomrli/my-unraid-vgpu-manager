@@ -1,0 +1,9 @@
+#!/bin/bash
+# Unraid calls post-hooks with: plugin method plugin-name error.
+[ "${1:-}" = plugin ] && [ -z "${4:-}" ] || exit 0
+case "${2:-}" in install|update) ;; *) exit 0 ;; esac
+case "${3##*/}" in unRAIDServer.plg|unRAIDServer-*.plg) ;; *) exit 0 ;; esac
+CHECK=/usr/local/emhttp/plugins/my-unraid-vgpu-manager/include/upgrade-check.sh
+# Synchronous: show the driver result in the OS update log before it completes.
+# A missing driver must not make a successful OS update look like a failed one.
+"$CHECK" auto || true

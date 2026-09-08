@@ -1,0 +1,3 @@
+#!/bin/bash
+# Finish restoring opted-in stacks before Docker/libvirt and VM autostart.
+/usr/local/emhttp/plugins/my-unraid-vgpu-manager/scripts/rc.vgpu ensure >>/var/log/my-unraid-vgpu-manager-boot.log 2>&1

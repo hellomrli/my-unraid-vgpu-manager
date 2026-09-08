@@ -1,0 +1,33 @@
+name: Validate plugin
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install verification tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y php-cli php-xml shellcheck bubblewrap jq fonts-noto-cjk
+          # The tests use unprivileged namespaces on this disposable runner.
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+      - name: Syntax, lifecycle regressions and package consistency
+        run: ./scripts/check.sh
+      - name: Install browser test dependency
+        run: npm ci --ignore-scripts
+      - name: Browser interaction checks
+        run: python3 tests/browser_server.py
+      - name: Save interface screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: interface-screenshots
+          path: tests/artifacts/*.png
+          if-no-files-found: ignore
