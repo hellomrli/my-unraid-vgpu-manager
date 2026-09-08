@@ -11,9 +11,8 @@ configure_cron() {
   if [ "$(setting update_check)" = true ]; then
     printf '17 9 * * * %s/include/update-check.sh >/dev/null 2>&1\n' "$EMHTTP" >> "$tmp"
   fi
-  if [ "$(setting kernel_upgrade_check)" != false ]; then
-    printf '* * * * * %s/include/upgrade-check.sh auto >>/var/log/%s-upgrade.log 2>&1\n' "$EMHTTP" "$PLUGIN" >> "$tmp"
-  fi
+  # OS updates still need a notification when automatic preparation is off.
+  printf '* * * * * %s/include/upgrade-check.sh auto >>/var/log/%s-upgrade.log 2>&1\n' "$EMHTTP" "$PLUGIN" >> "$tmp"
   crontab "$tmp"
   local result=$?
   rm -f "$tmp"

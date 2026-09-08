@@ -50,13 +50,16 @@ function vgpu_set_settings($values) {
     } finally { flock($lock, LOCK_UN); fclose($lock); }
 }
 function vgpu_init_language() {
-    global $display, $vgpu_language, $vgpu_translations;
-    $language = vgpu_setting('ui_language', 'zh_CN');
-    if ($language === 'auto') {
-        $locale = isset($display) ? ($display['locale'] ?? 'en') : ($_SERVER['HTTP_ACCEPT_LANGUAGE'] ?? 'en');
-        $language = stripos($locale, 'zh') === 0 ? 'zh_CN' : 'en';
+    global $locale, $display, $vgpu_language, $vgpu_translations;
+    // Unraid's page locale takes precedence. Standalone POST requests use its
+    // existing session or display settings, never a plugin/browser preference.
+    if (!isset($locale) && !isset($_SESSION['locale']) && session_status() === PHP_SESSION_NONE &&
+        isset($_COOKIE[session_name()]) && !headers_sent()) {
+        @session_start(['read_and_close' => true]);
     }
-    $vgpu_language = $language === 'zh_CN' ? 'zh_CN' : 'en';
+    $config = @parse_ini_file('/boot/config/plugins/dynamix/dynamix.cfg', true, INI_SCANNER_RAW) ?: [];
+    $unraid_locale = $locale ?? $_SESSION['locale'] ?? $display['locale'] ?? $config['display']['locale'] ?? '';
+    $vgpu_language = strncasecmp((string)$unraid_locale, 'zh', 2) === 0 ? 'zh_CN' : 'en';
     $vgpu_translations = $vgpu_language === 'zh_CN' ? (json_decode(file_get_contents(__DIR__.'/zh_CN.json'), true) ?: []) : [];
 }
 function vgpu_t($message, $params = []) {
@@ -99,6 +102,41 @@ function vgpu_run($arguments, $lock = null) {
     return ['code' => proc_close($process), 'output' => trim($output)];
 }
 function vgpu_command_text($args) { return vgpu_run($args)['output']; }
+function vgpu_driver_updates($mode = 'status') {
+    global $vgpu_emhttp;
+    $result = vgpu_run(['/bin/bash', "$vgpu_emhttp/include/update-check.sh", $mode]);
+    $state = json_decode($result['output'], true);
+    if (!is_array($state) || !isset($state['drivers'])) throw new RuntimeException('Could not check driver updates. Try again.');
+    foreach ($state['drivers'] as &$driver) {
+        $labels = ['disabled'=>'Not enabled', 'unchecked'=>'Not checked', 'current'=>'No newer driver available',
+            'missing'=>'Not installed for this kernel', 'pinned'=>'A fixed driver version is selected',
+            'error'=>'Update check failed. Try again.'];
+        $driver['message'] = vgpu_t($labels[$driver['status']] ?? 'Not checked');
+        if ($driver['status'] === 'available') {
+            $driver['message'] = vgpu_t('Update available: {current} → {latest}', [
+                'current'=>vgpu_package_label($driver['current']), 'latest'=>vgpu_package_label($driver['latest'])]);
+        }
+    }
+    unset($driver);
+    return $state;
+}
+function vgpu_package_label($package) {
+    if (preg_match('/^(?:nvidia|i915-sriov)-([0-9.]+)-.+-([0-9]+)\.txz$/D', $package, $match)) {
+        return vgpu_t('{version} (build {build})', ['version'=>$match[1], 'build'=>$match[2]]);
+    }
+    return $package;
+}
+function vgpu_update_rows($updates, $sources = ['nvidia','i915']) {
+    foreach (['nvidia'=>'NVIDIA vGPU', 'i915'=>'Intel i915 SR-IOV'] as $source=>$name) {
+        if (!in_array($source, $sources, true)) continue;
+        $driver = $updates['drivers'][$source];
+        if ($driver['status'] === 'disabled') continue;
+        $available = $driver['status'] === 'available';
+        echo '<tr data-update-row="'.$source.'"><td>'.vgpu_h($name).' '.vgpu_e('Driver update').':</td><td colspan="3">';
+        echo '<span data-update-message="'.$source.'" class="'.($available ? 'vgpu-warn' : 'vgpu-muted').'">'.vgpu_h($driver['message']).'</span> ';
+        echo '<button type="button" data-update-button="'.$source.'" data-command="'.($source === 'nvidia' ? 'update_driver' : 'update_intel').'" data-series="'.vgpu_h($driver['series']).'"'.($available ? '' : ' hidden').'>'.vgpu_e('Update driver').'</button></td></tr>';
+    }
+}
 function vgpu_vms() {
     $result = vgpu_run(['virsh', 'list', '--all', '--name']);
     return $result['code'] === 0 ? array_values(array_filter(explode("\n", $result['output']), 'strlen')) : [];

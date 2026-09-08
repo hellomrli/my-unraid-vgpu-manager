@@ -6,8 +6,10 @@ set -o pipefail
 source "$(dirname "$(readlink -f "$0")")/common.sh"
 MODE="${1:-auto}"
 STATE="/var/tmp/${PLUGIN}-upgrade.json"
+NOTICE_URL="/Settings/${PLUGIN}?kernel_upgrade=1#kernel-upgrade-panel"
 case "$MODE" in auto|prepare) ;; *) exit 1 ;; esac
-[ "$MODE" != auto ] || [ "$(setting kernel_upgrade_check)" != false ] || exit 0
+AUTO_DOWNLOAD=true
+[ "$MODE" != auto ] || [ "$(setting kernel_upgrade_check)" != false ] || AUTO_DOWNLOAD=false
 
 NV="$(setting nvidia_installed)"
 INTEL="$(setting intel_installed)"
@@ -36,7 +38,7 @@ SERIES="$(nvidia_active_series)"
 WANT="$(setting driver_version)"
 [ -n "$WANT" ] || WANT=latest
 valid_version "$WANT" || exit 1
-KEY="$(printf '%s|%s|%s|%s|%s' "$TARGET" "$NV" "$INTEL" "$SERIES" "$WANT" | sha256sum | cut -d' ' -f1)"
+KEY="$(printf '%s|%s|%s|%s|%s|%s' "$TARGET" "$NV" "$INTEL" "$SERIES" "$WANT" "$AUTO_DOWNLOAD" | sha256sum | cut -d' ' -f1)"
 NOW="$(date +%s)"
 if [ "$MODE" = auto ] && [ -s "$STATE" ]; then
   OLD_KEY="$(jq -r '.key // empty' "$STATE" 2>/dev/null)"
@@ -67,15 +69,19 @@ save_state() {
       nvidia_package:$nvidia_package,intel_package:$intel_package,series:$series,wanted_version:$wanted_version,checked_at:$checked_at}' > "$tmp" &&
     chmod 0644 "$tmp" && mv -f "$tmp" "$STATE"
 }
-save_state downloading || exit 1
-MESSAGE="$(bilingual "New boot kernel $TARGET detected. Preparing enabled GPU drivers; wait for the result before rebooting." "检测到下次启动内核 $TARGET，正在准备已启用的 GPU 驱动，请等待结果后再重启。")"
-echo "$MESSAGE"
-# Do not repeat the progress notification during a successful periodic recheck.
-[ "${OLD_STATUS:-}" = ready ] || vgpu_notify "$MESSAGE" warning
+if [ "$AUTO_DOWNLOAD" = true ]; then
+  save_state downloading || exit 1
+  MESSAGE="$(bilingual "New boot kernel $TARGET detected. Preparing enabled GPU drivers; wait for the result before rebooting." "检测到下次启动内核 $TARGET，正在准备已启用的 GPU 驱动，请等待结果后再重启。")"
+  echo "$MESSAGE"
+  # Do not repeat the progress notification during a successful periodic recheck.
+  [ "${OLD_STATUS:-}" = ready ] || vgpu_notify "$MESSAGE" warning "$NOTICE_URL"
+else
+  save_state pending || exit 1
+fi
 
 RESULT=0
 if [ "$NV" = true ] && [ "$(setting nvidia_installed)" = true ]; then
-  if "$EMHTTP/include/download.sh" nvidia "$SERIES" "$WANT" --kernel "$TARGET" &&
+  if { [ "$AUTO_DOWNLOAD" = false ] || "$EMHTTP/include/download.sh" nvidia "$SERIES" "$WANT" --kernel "$TARGET"; } &&
      NPKG="$(find_package nvidia "$TARGET" "$SERIES" "$WANT")"; then
     NPKG="${NPKG##*/}"; NSTATUS=ready
   else NSTATUS=missing; RESULT=1; fi
@@ -83,7 +89,7 @@ else
   NSTATUS=disabled
 fi
 if [ "$INTEL" = true ] && [ "$(setting intel_installed)" = true ]; then
-  if "$EMHTTP/include/download.sh" i915 latest --kernel "$TARGET" &&
+  if { [ "$AUTO_DOWNLOAD" = false ] || "$EMHTTP/include/download.sh" i915 latest --kernel "$TARGET"; } &&
      IPKG="$(find_package i915 "$TARGET")"; then
     IPKG="${IPKG##*/}"; ISTATUS=ready
   else ISTATUS=missing; RESULT=1; fi
@@ -94,12 +100,15 @@ if [ "$RESULT" = 0 ]; then
   save_state ready || exit 1
   MESSAGE="$(bilingual "GPU driver packages for $TARGET are downloaded and verified. Reboot after the Unraid update completes; the enabled drivers will be restored locally." "$TARGET 对应的 GPU 驱动包已下载并校验。确认 Unraid 更新完成后即可重启，已启用的驱动会从本地恢复。")"
   echo "$MESSAGE"
-  [ "${OLD_STATUS:-}" = ready ] || vgpu_notify "$MESSAGE"
+  [ "${OLD_STATUS:-}" = ready ] || vgpu_notify "$MESSAGE" normal "$NOTICE_URL"
 else
   save_state missing || exit 1
   status_zh() { case "$1" in ready) echo 已就绪 ;; disabled) echo 未启用 ;; *) echo 未就绪 ;; esac; }
   MESSAGE="$(bilingual "GPU drivers for $TARGET are NOT ready (NVIDIA: $NSTATUS, Intel: $ISTATUS). Check the vGPU Manager before rebooting; GPU features may be unavailable on the new kernel." "$TARGET 的 GPU 驱动尚未就绪（NVIDIA：$(status_zh "$NSTATUS")，Intel：$(status_zh "$ISTATUS")）。请在重启前打开 vGPU 管理页面检查，否则新内核下可能无法使用 GPU 功能。")"
   echo "$MESSAGE" >&2
-  [ "${OLD_STATUS:-}" = missing ] || vgpu_notify "$MESSAGE" alert
+  [ "${OLD_STATUS:-}" = missing ] || vgpu_notify "$MESSAGE" alert "$NOTICE_URL"
 fi
+# Disabling automatic downloads still leaves a notification entry to prepare
+# manually. Missing local packages are expected in this notification-only mode.
+[ "$AUTO_DOWNLOAD" != false ] || exit 0
 exit "$RESULT"

@@ -1,6 +1,12 @@
 # 项目审查与修复记录
 
-审查日期：2026-09-08。本报告记录 **2026.09.08** 版本的修复、验证结果和后续事项。
+审查日期：2026-09-08。本报告记录 **2026.09.08a** 版本的修复、验证结果和后续事项。
+
+## 界面与更新交互
+
+- 保留原来的三个标签页、紧凑表格、状态条、图标和表单排列，界面语言直接跟随 Unraid，移除独立语言选择器。
+- 升级准备选项只在有待启动的新内核、且从 Unraid 更新通知进入时显示。普通页面及重启后的旧通知不显示该区域；关闭自动下载仍会发送准备提醒。
+- 驱动状态显示当前版本、可更新版本及构建号，并提供更新按钮。支持手动检查和异步缓存刷新，未启用的驱动不查询；检查失败不会误报已是最新版本。
 
 ## 审查依据
 
@@ -23,7 +29,7 @@
 | 中 | 页面数据直接进入 JavaScript / HTML，特殊 VM 名称和配置档内容可能破坏页面；刷新可能重复提交 | 转义 HTML 和内嵌 JSON，安全构造 DOM，POST 使用独立动作端点与 CSRF 校验，完成后通过 GET 刷新 |
 | 中 | 保存常规设置会意外重置 NVIDIA unlock；授权地址改变后旧 token 可能继续被复用 | 分开处理设置；地址或端口变化重新获取 token，请求失败保留原运行配置，并提供证书校验选项 |
 | 中 | NVIDIA 系列判断及硬件说明不够准确，系统升级时存在意外切换分支的风险 | 共享 PCI ID 元数据；新安装按硬件推荐，系统升级保持已安装系列；缩小未验证硬件的支持声明 |
-| 低 | 界面缺少中文、HTTP 环境复制功能受限、移动页面显示不完整 | 新增简体中文 / English / 跟随 Unraid，完善中文提示、剪贴板回退和移动布局 |
+| 低 | 界面缺少中文、HTTP 环境复制功能受限、移动页面显示不完整 | 自动跟随 Unraid 的中文 / 英文，保留原布局，完善剪贴板回退和移动显示 |
 
 主要实现见 [rc.vgpu](source/usr/local/emhttp/plugins/my-unraid-vgpu-manager/scripts/rc.vgpu)、[common.sh](source/usr/local/emhttp/plugins/my-unraid-vgpu-manager/include/common.sh)、[download.sh](source/usr/local/emhttp/plugins/my-unraid-vgpu-manager/include/download.sh) 和 [actions.php](source/usr/local/emhttp/plugins/my-unraid-vgpu-manager/include/actions.php)。
 
@@ -39,16 +45,16 @@ Unraid 更新写入启动盘后，从 `/boot/bzimage` 的 Linux 启动头读取�
 | 两者均启用 | 各自准备，全部校验成功才显示已就绪 |
 | 任一已启用驱动缺包、下载失败或校验失败 | 显示未就绪并通知用户重启后可能无法使用相应 GPU 功能 |
 
-“启用”使用用户安装驱动后保存的管理状态判断；检测到硬件或缓存中有旧包都不构成启用。开始下载每个驱动前会再次检查其状态。自动准备可独立关闭，页面也支持输入目标内核手动准备。
+“启用”使用用户安装驱动后保存的管理状态判断；检测到硬件或缓存中有旧包都不构成启用。开始下载每个驱动前会再次检查其状态。自动准备可独立关闭；通过更新通知打开的选项可手动重试检测到的目标内核。
 
 预下载不替换当前运行内核的驱动、不自动重启，也不拦截 Unraid 重启按钮。新内核启动后，只从匹配且校验通过的本地缓存恢复已启用驱动。实现见 [upgrade-check.sh](source/usr/local/emhttp/plugins/my-unraid-vgpu-manager/include/upgrade-check.sh) 和 [kernel.php](source/usr/local/emhttp/plugins/my-unraid-vgpu-manager/include/kernel.php)。
 
 ## 验证
 
-- **36 项隔离回归测试及 1 项构建一致性测试通过**：涵盖启用状态、单驱动准备、保留系列、缺包和损坏缓存、重复检查节流、错误内核拒绝、更新失败、同版本重构建、无网络启动恢复、VM 活动绑定、设备繁忙、VF 数量及授权失败等行为，并确认不同 checkout 权限掩码下生成相同安装包。
-- **浏览器交互验证通过**：中文 / 英文切换、实际表单提交、刷新不重复添加设备、标签页保留、UUID 生成、含引号的 VM 名称、内嵌 JSON 注入防护、CSRF 拒绝、升级弹窗参数和移动布局。
+- **44 项隔离回归测试及 1 项构建一致性测试通过**：涵盖启用状态、单驱动准备、保留系列、缺包和损坏缓存、重复检查节流、错误内核拒绝、更新失败、同版本重构建、无网络启动恢复、VM 活动绑定、设备繁忙、VF 数量及授权失败；另验证通知入口、跟随 Unraid 语言、版本提示、更新状态失效，以及不同 checkout 权限掩码下生成相同安装包。
+- **浏览器交互验证通过**：原版布局对照、跟随 Unraid 中文 / 英文、版本及更新按钮、检查失败与恢复、通知入口显示条件、实际表单提交、刷新不重复添加设备、标签页保留、UUID 生成、含引号的 VM 名称、内嵌 JSON 注入防护、CSRF 拒绝和移动布局。
 - PHP、Bash、JavaScript、JSON、XML 和 ShellCheck 检查通过，`git diff --check` 通过。
-- 通过可重复构建检查，确认 `packages/my-unraid-vgpu-manager-2026.09.08.txz` 与 `source/` 完全一致，且 MD5 与 `.plg` 清单一致。
+- 通过可重复构建检查，确认 `packages/my-unraid-vgpu-manager-2026.09.08a.txz` 与 `source/` 完全一致，且 MD5 与 `.plg` 清单一致。
 - 新增 CI 工作流，运行上述检查并保存浏览器截图。以上结果来自发布前的本地验证，远端结果见 [GitHub Actions](https://github.com/hellomrli/my-unraid-vgpu-manager/actions/workflows/check.yml)。
 
 测试入口为 [scripts/check.sh](scripts/check.sh) 和 [tests/browser_server.py](tests/browser_server.py)。驱动命令运行在 bubblewrap 隔离的模拟 Unraid 文件系统中，替换了网络、包管理和 GPU 命令；浏览器连接本地测试服务。

@@ -7,7 +7,7 @@ import shutil
 import socket
 import subprocess
 import sys
-from sandbox import Sandbox, BASE, PLUGIN, UUID, NEXT_KERNEL
+from sandbox import Sandbox, BASE, PLUGIN, UUID, KERNEL, NEXT_KERNEL
 
 ROOT=Path(__file__).resolve().parents[1]
 
@@ -27,15 +27,31 @@ def main():
         vm_name='Lab\'s "Windows 11" & 测试'
         box.state['vms']={vm_name:{'state':'running','inactive':f'<domain><devices><hostdev type="mdev"><source><address uuid="{UUID}"/></source></hostdev></devices></domain>','active':'<domain><devices/></domain>'}}
         box.package(kernel=NEXT_KERNEL,remote=True); box.package(source='i915',kernel=NEXT_KERNEL,remote=True)
+        box.package(version='535.310.00',remote=True)
+        box.package(source='i915',build=2,remote=True)
         box.write_state()
         ready=box.helper('upgrade-check.sh','prepare')
         if ready.returncode: raise RuntimeError(ready.stdout+ready.stderr)
+        notification=box.events('notify')[-1][1]
+        upgrade_link=notification[notification.index('-l')+1]
+        # A prepared target alone must not make upgrade controls appear.
+        box.boot_image(KERNEL)
+        legacy=os.environ.get('VGPU_LEGACY_PAGE')
+        if legacy: shutil.copy(legacy,box.root/'legacy.page')
+        # Optional local visual reference; production provides these fonts.
+        reference=Path('/tmp/vgpu-review-webgui/emhttp/webGui/styles')
+        if reference.is_dir():
+            (box.root/'local/emhttp/webGui/styles').mkdir(parents=True,exist_ok=True)
+            for name in ['font-awesome.css','font-awesome.woff']:
+                shutil.copy(reference/name,box.root/'local/emhttp/webGui/styles'/name)
         router=box.root/'router.php'
         router.write_text('''<?php
-$var = ['csrf_token'=>'test-token']; $display=['locale'=>'en_US'];
+$var = ['csrf_token'=>'test-token'];
+$display=(parse_ini_file('/boot/config/plugins/dynamix/dynamix.cfg',true)['display'] ?? []);
+$locale=$display['locale'] ?? '';
 $path=parse_url($_SERVER['REQUEST_URI'],PHP_URL_PATH);
 if ($path === '/favicon.ico') { http_response_code(204); exit; }
-if (strpos($path, '/plugins/') === 0) {
+if (strpos($path, '/plugins/') === 0 || strpos($path, '/webGui/styles/') === 0) {
     $file='/usr/local/emhttp'.$path;
     if (!is_file($file)) { http_response_code(404); exit; }
     if (substr($file,-4)==='.php') { include $file; exit; }
@@ -44,15 +60,15 @@ if (strpos($path, '/plugins/') === 0) {
 }
 ?><!doctype html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Unraid vGPU Manager preview</title><style>
 :root {--background-alt:#fff} body {background:#f4f5f6;color:#292b30;font:14px/1.6 Arial,"Noto Sans CJK SC",sans-serif;margin:0;padding:24px} button,input,select,textarea {font:inherit;color:inherit;border:1px solid #bdc2c8;border-radius:4px;padding:6px 9px;background:#fff} button {background:#f1f3f5} h2,h3 {font-weight:600} a {color:#22699c} @media(max-width:700px){body{padding:12px}}
-</style></head><body><script>window.__openBoxCalls=[];function openBox(){window.__openBoxCalls.push(Array.from(arguments));}</script>
-<?php $source=file_get_contents('/usr/local/emhttp/plugins/my-unraid-vgpu-manager/my-unraid-vgpu-manager.page'); eval('?>'.explode("---\\n",$source,2)[1]); ?>
+</style><?php if (is_file('/usr/local/emhttp/webGui/styles/font-awesome.css')): ?><link rel="stylesheet" href="/webGui/styles/font-awesome.css"><?php endif; ?></head><body><script>window.__openBoxCalls=[];function openBox(){window.__openBoxCalls.push(Array.from(arguments));}</script>
+<?php $source=file_get_contents($path==='/legacy' && is_file('/tmp/fixture/legacy.page') ? '/tmp/fixture/legacy.page' : '/usr/local/emhttp/plugins/my-unraid-vgpu-manager/my-unraid-vgpu-manager.page'); eval('?>'.explode("---\\n",$source,2)[1]); ?>
 </body></html>''')
         with socket.socket() as probe:
             probe.bind(('127.0.0.1',0)); port=probe.getsockname()[1]
         log=(box.root/'server.log').open('w')
         process=subprocess.Popen(box.argv(['php','-S',f'127.0.0.1:{port}','/tmp/fixture/router.php'],network=True),stdout=log,stderr=log)
         env=os.environ.copy()
-        env.update(VGPU_TEST_URL=f'http://127.0.0.1:{port}/Settings/my-unraid-vgpu-manager',VGPU_FIXTURE=str(box.root),VGPU_VM_NAME=vm_name)
+        env.update(VGPU_TEST_URL=f'http://127.0.0.1:{port}/Settings/my-unraid-vgpu-manager',VGPU_FIXTURE=str(box.root),VGPU_VM_NAME=vm_name,VGPU_UPGRADE_LINK=upgrade_link)
         result=subprocess.run(['node',str(ROOT/'tests/browser.cjs')],env=env)
         if result.returncode:
             print((box.root/'server.log').read_text(),file=sys.stderr)

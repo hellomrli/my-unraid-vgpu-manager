@@ -40,6 +40,7 @@ class Sandbox:
         self.state = {'kernel': KERNEL, 'releases': {}, 'vms': {}, 'processes': []}
         self.write_state()
         self.settings(nvidia_installed='false', intel_installed='false', nvidia_series='16', driver_version='latest', update_check='true', kernel_upgrade_check='true', ui_language='zh_CN', intel_vf_number='7')
+        self.locale('zh_CN')
         self.boot_image(NEXT_KERNEL)
     def close(self): self.temp.cleanup()
     def write_state(self): (self.root/'state.json').write_text(json.dumps(self.state))
@@ -51,6 +52,14 @@ class Sandbox:
         path.write_text(''.join(k+'='+v+'\n' for k,v in old.items()))
     def read_settings(self):
         return dict(line.split('=',1) for line in (self.root/('boot/config/plugins/'+PLUGIN+'/settings.cfg')).read_text().splitlines() if '=' in line)
+    def locale(self, language):
+        path=self.root/'boot/config/plugins/dynamix/dynamix.cfg'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('[display]\nlocale="'+language+'"\n')
+    def page(self, **query):
+        (self.root/'query.json').write_text(json.dumps(query))
+        code="$var=['csrf_token'=>'test-token']; $_GET=json_decode(file_get_contents('/tmp/fixture/query.json'),true); $source=file_get_contents('"+BASE+"/my-unraid-vgpu-manager.page'); eval('?>'.explode(\"---\\n\",$source,2)[1]);"
+        return self.run('php','-r',code)
     def boot_image(self, kernel):
         data=bytearray(4096); data[0x202:0x206]=b'HdrS'; data[0x20e:0x210]=struct.pack('<H',0x100)
         version=(kernel+' (builder@test)\0').encode(); data[0x300:0x300+len(version)]=version

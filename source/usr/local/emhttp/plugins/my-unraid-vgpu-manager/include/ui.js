@@ -42,7 +42,8 @@
       tabs[next].focus();
     });
   });
-  switchTab(location.hash.slice(1) || recall('vgpu-tab'));
+  switchTab(page.showUpgrade ? 'tab-drivers' : (location.hash.slice(1) || recall('vgpu-tab')));
+  if (page.showUpgrade) document.getElementById('kernel-upgrade-panel').scrollIntoView();
   try {
     const flash = JSON.parse(recall('vgpu-message') || 'null');
     sessionStorage.removeItem('vgpu-message');
@@ -96,7 +97,44 @@
   });
 
   let submitting = false;
+  let checkingUpdates = false;
+  async function checkUpdates(refresh) {
+    const form = document.getElementById('vgpu-update-form');
+    if (!form || checkingUpdates) return;
+    checkingUpdates = true;
+    const button = form.querySelector('button[type="submit"]');
+    const status = document.getElementById('update-check-message');
+    button.disabled = true;
+    status.textContent = text('Checking for driver updates…');
+    const data = new FormData(form);
+    data.set('refresh', refresh ? 'true' : 'false');
+    try {
+      const response = await fetch(form.action, {method: 'POST', body: data, credentials: 'same-origin'});
+      const result = await response.json();
+      if (!response.ok || !result.ok || !result.updates?.drivers) throw new Error('Invalid update status');
+      for (const source of ['nvidia', 'i915']) {
+        const driver = result.updates.drivers[source];
+        if (!driver || typeof driver.message !== 'string') throw new Error('Invalid driver status');
+        root.querySelectorAll('[data-update-row="' + source + '"]').forEach(row => {
+          row.hidden = driver.status === 'disabled';
+          const label = row.querySelector('[data-update-message]');
+          label.textContent = driver.message;
+          label.className = driver.status === 'available' ? 'vgpu-warn' : 'vgpu-muted';
+          const update = row.querySelector('[data-update-button]');
+          update.hidden = driver.status !== 'available';
+          update.dataset.series = driver.series;
+        });
+      }
+      status.textContent = '';
+    } catch (_) {
+      status.textContent = text('Could not check driver updates. Try again.');
+    } finally {
+      button.disabled = false;
+      checkingUpdates = false;
+    }
+  }
   async function submit(form) {
+    if (form.id === 'vgpu-update-form') { await checkUpdates(true); return; }
     if (submitting) return;
     if (form.id === 'vgpu-add-form' && !form.querySelector('input[name="mtype"]:checked')) {
       message(text('Select a profile first.'), false); return;
@@ -176,4 +214,5 @@
     }
     openBox(url, text(operation[0]), 600, 900, true);
   }));
+  if (page.autoUpdates) checkUpdates(false);
 }());

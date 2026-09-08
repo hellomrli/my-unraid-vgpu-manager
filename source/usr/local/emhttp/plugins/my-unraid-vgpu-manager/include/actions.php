@@ -30,24 +30,23 @@ try {
         throw new RuntimeException('The page token expired. Refresh the page and try again.');
     }
     $action = vgpu_post('vgpu_action');
-    if (!in_array($action, ['save_language','save_settings','save_nvidia','save_intel','save_override','add_device','start_device','stop_device','remove_device','attach_vm','detach_vm'], true)) {
+    if ($action === 'check_updates') {
+        $mode = vgpu_choice('refresh', ['true','false'], 'true') === 'true' ? 'refresh' : 'check';
+        echo vgpu_json(['ok'=>true, 'updates'=>vgpu_driver_updates($mode)]);
+        return;
+    }
+    if (!in_array($action, ['save_settings','save_upgrade_settings','save_nvidia','save_intel','save_override','add_device','start_device','stop_device','remove_device','attach_vm','detach_vm'], true)) {
         throw new InvalidArgumentException('Unknown operation.');
     }
     $lock = fopen('/var/lock/my-unraid-vgpu-manager.lock', 'c');
     if (!$lock || !flock($lock, LOCK_EX | LOCK_NB)) throw new RuntimeException('Another GPU operation is running. Try again after it finishes.');
     $message = '';
     switch ($action) {
-        case 'save_language':
-            vgpu_set_settings(['ui_language' => vgpu_choice('ui_language', ['auto', 'zh_CN', 'en'])]);
-            vgpu_init_language();
-            $message = vgpu_t('Language saved.');
-            break;
         case 'save_settings':
+        case 'save_upgrade_settings':
             // General settings must not overwrite NVIDIA unlock/module options.
-            vgpu_set_settings([
-                'update_check' => vgpu_choice('update_check', ['true','false']),
-                'kernel_upgrade_check' => vgpu_choice('kernel_upgrade_check', ['true','false'])
-            ]);
+            $key = $action === 'save_settings' ? 'update_check' : 'kernel_upgrade_check';
+            vgpu_set_settings([$key => vgpu_choice($key, ['true','false'])]);
             $result = vgpu_run(['/bin/bash', "$vgpu_emhttp/include/exec.sh", 'configure_cron'], $lock);
             if ($result['code'] !== 0) throw new RuntimeException('Settings were saved, but the scheduled checks could not be configured.');
             $message = vgpu_t('Settings saved.');

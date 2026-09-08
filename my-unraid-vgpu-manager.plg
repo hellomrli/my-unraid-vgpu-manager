@@ -2,11 +2,11 @@
 <!DOCTYPE PLUGIN [
   <!ENTITY name      "my-unraid-vgpu-manager">
   <!ENTITY author    "hellomrli">
-  <!ENTITY version   "2026.09.08">
+  <!ENTITY version   "2026.09.08a">
   <!ENTITY launch    "Settings/my-unraid-vgpu-manager">
   <!ENTITY gitURL    "https://github.com/&author;/&name;/raw/master">
   <!ENTITY pluginURL "&gitURL;/&name;.plg">
-  <!ENTITY md5       "3e8f38be98629d56c8a6e91463f7517a">
+  <!ENTITY md5       "34dac06033dad6591e739a3cad5592d9">
   <!ENTITY plugin    "/boot/config/plugins/&name;">
   <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
   <!ENTITY packages  "/boot/config/plugins/&name;/packages">
@@ -15,6 +15,18 @@
 <PLUGIN  name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" min="6.11.5" support="https://github.com/&author;/&name;">
 
 <CHANGES>
+##2026.09.08a
+- FIX: restore the original compact panels, tables, tabs and form layout.
+- CHG: follow the Unraid interface language; remove the plugin language picker.
+- CHG: show kernel-upgrade preparation only through an Unraid update
+  notification while a different boot kernel is staged. Keep normal pages clear.
+  Turning off automatic preparation still sends a reminder without downloading.
+- ADD: driver status shows installed and available versions, including build
+  numbers, with update buttons and a manual metadata check. Only enabled drivers
+  are checked; NVIDIA updates stay within the installed series.
+- FIX: invalidate update notices after installation, driver disable or kernel
+  changes; report failed checks without claiming the driver is up to date.
+
 ##2026.09.08
 - ADD: Simplified Chinese UI, English and follow-Unraid language selection.
 - ADD: detect the next boot kernel from /boot/bzimage after an Unraid OS update.
@@ -169,7 +181,7 @@
 <INLINE>
 **Unraid vGPU Manager / Unraid vGPU 管理器**
 
-Manage NVIDIA vGPU and Intel i915 SR-IOV from Settings. 中文 / English 可切换。
+Manage NVIDIA vGPU and Intel i915 SR-IOV from Settings. 界面语言跟随 Unraid。
 Drivers are installed on demand. OS upgrade preparation downloads only drivers
 you already enabled, for the kernel staged on the boot drive, and reports their
 readiness before reboot. Enabled packages are restored locally at the next boot.
@@ -189,7 +201,7 @@ for pair in first_installation=true driver_version=latest update_check=true \
   nvidia_installed=false intel_installed=false nvidia_series=auto unlock=false \
   nvidia_license_server= nvidia_license_port=443 nvidia_feature_type=0 \
   nvidia_license_verify=false nvidia_load_uvm=true nvidia_load_modeset=true \
-  nvidia_load_drm=true intel_vf_number=7 ui_language=zh_CN kernel_upgrade_check=true; do
+  nvidia_load_drm=true intel_vf_number=7 kernel_upgrade_check=true; do
   key="${pair%%=*}"
   grep -q "^${key}=" "$SETTINGS" 2&gt;/dev/null || set_setting "$key" "${pair#*=}" || exit 1
 done
@@ -232,7 +244,7 @@ crontab -l 2&gt;/dev/null | grep -Fv '/usr/local/emhttp/plugins/my-unraid-vgpu-m
 /bin/bash /usr/local/emhttp/plugins/my-unraid-vgpu-manager/scripts/rc.vgpu stop || true
 rm -f /usr/local/emhttp/plugins/dynamix.plugin.manager/post-hooks/my-unraid-vgpu-manager
 rm -f /boot/config/modprobe.d/my-unraid-vgpu-manager-i915.conf /etc/modprobe.d/my-unraid-vgpu-manager-i915.conf
-rm -f /var/tmp/my-unraid-vgpu-manager-upgrade.json /var/tmp/my-unraid-vgpu-manager-update-*
+rm -f /var/tmp/my-unraid-vgpu-manager-upgrade.json /var/tmp/my-unraid-vgpu-manager-updates.json /var/tmp/my-unraid-vgpu-manager-update-*
 removepkg &name;-&version;
 rm -rf /usr/local/emhttp/plugins/&name;
 echo "Plugin removed. Reboot to unload drivers. Settings and driver caches remain on the flash drive."

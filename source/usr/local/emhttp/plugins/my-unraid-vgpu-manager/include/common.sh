@@ -157,12 +157,8 @@ release_assets() {
 
 is_chinese() {
   local language
-  language="$(setting ui_language)"
-  if [ "$language" = auto ]; then
-    language="$(sed -n 's/^locale="\{0,1\}\([^" ]*\)"\{0,1\}$/\1/p' /boot/config/plugins/dynamix/dynamix.cfg 2>/dev/null | head -1)"
-    [ -n "$language" ] || language=en
-  fi
-  case "${language:-zh_CN}" in zh*) return 0 ;; *) return 1 ;; esac
+  language="$(php -r '$c=@parse_ini_file("/boot/config/plugins/dynamix/dynamix.cfg",true,INI_SCANNER_RAW); echo $c["display"]["locale"] ?? "";' 2>/dev/null)"
+  case "$language" in [zZ][hH]*) return 0 ;; *) return 1 ;; esac
 }
 
 bilingual() {
@@ -171,7 +167,7 @@ bilingual() {
 
 vgpu_notify() {
   /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Unraid vGPU Manager" \
-    -d "$1" -i "${2:-normal}" -l "/Settings/${PLUGIN}"
+    -d "$1" -i "${2:-normal}" -l "${3:-/Settings/${PLUGIN}}"
 }
 
 # Serialize runtime actions, including PHP mdev/VM operations. The web helper
