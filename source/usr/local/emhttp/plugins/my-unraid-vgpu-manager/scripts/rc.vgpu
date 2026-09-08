@@ -51,7 +51,7 @@ notify() {
 }
 
 pkg_file() {
-  find_package nvidia "$KERNEL_V" "$(nvidia_series)" "${1:-latest}"
+  find_package nvidia "$KERNEL_V" "$(nvidia_series)" latest
 }
 
 i915_pkg_file() {
