@@ -2,11 +2,11 @@
 <!DOCTYPE PLUGIN [
   <!ENTITY name      "my-unraid-vgpu-manager">
   <!ENTITY author    "hellomrli">
-  <!ENTITY version   "2026.09.09">
+  <!ENTITY version   "2026.09.09a">
   <!ENTITY launch    "Settings/my-unraid-vgpu-manager">
   <!ENTITY gitURL    "https://github.com/&author;/&name;/raw/master">
   <!ENTITY pluginURL "&gitURL;/&name;.plg">
-  <!ENTITY md5       "72fb187a28373b965949c697c0c870be">
+  <!ENTITY md5       "a57afa96f5c996b9c8d3108372cc0fbe">
   <!ENTITY plugin    "/boot/config/plugins/&name;">
   <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
   <!ENTITY packages  "/boot/config/plugins/&name;/packages">
@@ -15,6 +15,15 @@
 <PLUGIN  name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" min="6.11.5" support="https://github.com/&author;/&name;">
 
 <CHANGES>
+##2026.09.09a
+- FIX: submit text forms using Unraid's URL-encoded format. Multipart FormData
+  requests could stall in the native authentication subrequest before the
+  plugin endpoint ran, even when GitHub and the driver check script were fast.
+- FIX: apply the compatible encoding to both driver checks and settings/device
+  forms, preserving CSRF tokens, Unicode, special characters and multiline text.
+- TEST: verified automatic and manual checks in a real Unraid 7.4.0-beta.2
+  WebUI; add browser coverage for native form encoding and CSRF consumption.
+
 ##2026.09.09
 - FIX: driver update checks no longer open a PHP session just to read the
   interface language, avoiding waits on another Unraid request's session lock.

@@ -79,8 +79,17 @@ const {chromium} = require(process.env.PLAYWRIGHT_CORE || 'playwright-core');
     await page.waitForFunction(() => document.getElementById('vgpu-message')?.textContent === 'Settings saved.');
     assert.match(fs.readFileSync(configFile,'utf8'),/^nvidia_unlock=true$/m);
     assert.match(fs.readFileSync(configFile,'utf8'),/^kernel_upgrade_check=true$/m);
-    const rejected=await context.request.post(new URL('/plugins/my-unraid-vgpu-manager/include/actions.php',url).href,{form:{vgpu_action:'check_updates',vgpu_token:'invalid',refresh:'true'}});
+    const rejected=await context.request.post(new URL('/plugins/my-unraid-vgpu-manager/include/actions.php',url).href,{form:{vgpu_action:'check_updates',csrf_token:'test-token',vgpu_token:'invalid',refresh:'true'}});
     assert.equal(rejected.status(),403);
+
+    // URL encoding must preserve text, separators and line breaks exactly.
+    await page.locator('[data-tab="tab-nvidia"]').click();
+    const overrideText='[profile.nvidia-65]\nnum_displays = 1\n# 中文 & + = % / 配置\n';
+    await page.locator('#override-area').fill(overrideText);
+    await page.locator('form:has(#override-area) button[type="submit"]').click();
+    await page.waitForFunction(() => document.getElementById('vgpu-message')?.textContent.startsWith('Profile overrides saved.'));
+    assert.equal(fs.readFileSync(path.join(fixture,'boot/config/nvidia-vgpu/profile_override.toml'),'utf8'),overrideText);
+    assert.equal(await page.locator('#override-area').inputValue(),overrideText);
 
     // Data embedded in the JSON profile table must never close its script tag.
     const profile=path.join(fixture,'sys/bus/pci/devices/0000:01:00.0/mdev_supported_types/nvidia-65/name');
@@ -221,7 +230,7 @@ const {chromium} = require(process.env.PLAYWRIGHT_CORE || 'playwright-core');
       await page.goto(new URL('/legacy',url).href);
       await page.screenshot({path:path.join(artifacts,'legacy-drivers.png'),fullPage:true});
     }
-    console.log('Browser checks passed: original layout, Unraid language, update versions/buttons, stalled requests/bodies, timeouts and retries, late responses, form/HTTP failures, busy checks, notification-only upgrade controls, POST actions, tab persistence, UUIDs, safe VM names/JSON, CSRF and mobile layout.');
+    console.log('Browser checks passed: native form encoding/CSRF, Unicode and multiline text, original layout, Unraid language, update versions/buttons, stalled requests/bodies, timeouts and retries, late responses, form/HTTP failures, busy checks, notification-only upgrade controls, POST actions, tab persistence, UUIDs, safe VM names/JSON and mobile layout.');
     console.log('Screenshots: '+artifacts);
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode=1; });

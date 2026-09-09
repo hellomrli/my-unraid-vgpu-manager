@@ -16,6 +16,9 @@
   };
   const remember = (key, value) => { try { sessionStorage.setItem(key, value); } catch (_) {} };
   const recall = key => { try { return sessionStorage.getItem(key); } catch (_) { return null; } };
+  // These forms contain text fields. Match Unraid's normal form encoding:
+  // multipart POSTs can stall in its auth subrequest before actions.php runs.
+  const encodeForm = form => new URLSearchParams(new FormData(form));
   const tabs = Array.from(root.querySelectorAll('[data-tab]'));
   let currentTab = 'tab-drivers';
   function switchTab(id) {
@@ -111,7 +114,7 @@
     try {
       button.disabled = true;
       status.textContent = text('Checking for driver updates…');
-      const data = new FormData(form);
+      const data = encodeForm(form);
       data.set('refresh', refresh ? 'true' : 'false');
       const controller = new AbortController();
       // Cover both the request and response body. The backend has a shorter
@@ -173,7 +176,7 @@
       message(text('Select a profile first.'), false); return;
     }
     if (form.dataset.detachVm && !confirm(text('Detach this vGPU from {vm}? Cold-start the VM to release it.', {vm: form.dataset.detachVm}))) return;
-    const data = new FormData(form);
+    const data = encodeForm(form);
     submitting = true;
     const buttons = Array.from(form.querySelectorAll('button[type="submit"]')).filter(b => !b.disabled);
     buttons.forEach(button => { button.disabled = true; });

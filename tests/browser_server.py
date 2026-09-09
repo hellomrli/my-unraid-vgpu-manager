@@ -54,7 +54,23 @@ if ($path === '/favicon.ico') { http_response_code(204); exit; }
 if (strpos($path, '/plugins/') === 0 || strpos($path, '/webGui/styles/') === 0) {
     $file='/usr/local/emhttp'.$path;
     if (!is_file($file)) { http_response_code(404); exit; }
-    if (substr($file,-4)==='.php') { include $file; exit; }
+    if (substr($file,-4)==='.php') {
+        // Enforce the native form-encoding contract at the web boundary.
+        // On Unraid, multipart POSTs can hang in auth-request.php before the
+        // plugin runs; fail fast here so that transport regression is visible.
+        if ($_SERVER['REQUEST_METHOD']==='POST') {
+            if (strpos($_SERVER['CONTENT_TYPE'] ?? '', 'application/x-www-form-urlencoded') !== 0) {
+                http_response_code(415); header('Content-Type: application/json');
+                echo json_encode(['ok'=>false,'message'=>'Use Unraid form encoding.']); exit;
+            }
+            if (($_POST['csrf_token'] ?? '') !== $var['csrf_token']) {
+                http_response_code(403); header('Content-Type: application/json');
+                echo json_encode(['error'=>'Invalid native CSRF token.']); exit;
+            }
+            unset($_POST['csrf_token']);
+        }
+        include $file; exit;
+    }
     header('Content-Type: '.(substr($file,-3)==='.js' ? 'application/javascript' : (substr($file,-4)==='.css' ? 'text/css' : 'application/octet-stream')));
     readfile($file); exit;
 }
