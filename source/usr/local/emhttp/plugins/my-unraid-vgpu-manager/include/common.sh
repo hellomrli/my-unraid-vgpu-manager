@@ -44,6 +44,58 @@ valid_version() {
   [[ "$1" = latest || "$1" =~ ^[0-9]+([.][0-9]+)*$ ]]
 }
 
+# A version becomes a fixed-width, lexicographically comparable key. Dotted
+# versions (535.309.01, 2026.09.16) and the legacy dot-stripped i915 date form
+# (202608121) both map into the same six-field space, so mixed naming stays
+# ordered and same-version rebuilds keep working.
+#
+# `sort -V` must not be used for this: it compares a digit run by numeric value,
+# which ranked the 9-digit 202608121 above the newer 8-digit 20260916 and made
+# every later i915 release look older than the installed one.
+version_key() {
+  local version="$1" rest part key='' index
+  local -a fields=()
+  [[ "$version" =~ ^[0-9]+([.][0-9]+)*$ ]] || return 1
+  if [[ "$version" == *.* ]]; then
+    IFS=. read -r -a fields <<< "$version"
+  elif [ "${#version}" -ge 8 ]; then
+    # Legacy i915 form: YYYYMMDD with an optional build counter appended.
+    fields=("${version:0:4}" "${version:4:2}" "${version:6:2}")
+    rest="${version:8}"
+    [ -z "$rest" ] || fields+=("$((10#$rest))")
+  else
+    fields=("$version")
+  fi
+  for index in 0 1 2 3 4 5; do
+    part="${fields[index]:-0}"
+    key+="$(printf '%010d' "$((10#$part))")"
+  done
+  printf '%s\n' "$key"
+}
+
+package_version_key() {
+  local name="${1##*/}" rest
+  case "$name" in
+    nvidia-*) rest="${name#nvidia-}" ;;
+    i915-sriov-*) rest="${name#i915-sriov-}" ;;
+    *) return 1 ;;
+  esac
+  version_key "${rest%%-*}"
+}
+
+# Oldest-first ordering for package names or paths. Entries without a
+# recognizable version sort first, so callers that keep the last match never
+# mistake them for a driver.
+sort_by_version() {
+  local item base key
+  while IFS= read -r item; do
+    [ -n "$item" ] || continue
+    base="${item##*/}"
+    key="$(package_version_key "$base")" || key=''
+    printf '%s\t%s\n' "$key" "$item"
+  done | LC_ALL=C sort -t $'\t' -k1,1 -k2,2 -u | cut -f2-
+}
+
 series_prefix() {
   case "$1" in 16) echo 535 ;; 19) echo 580 ;; *) return 1 ;; esac
 }
@@ -81,12 +133,17 @@ md5_ok() {
 }
 
 find_package() {
-  local source="$1" kernel="$2" series="${3:-}" want="${4:-latest}" file
+  local source="$1" kernel="$2" series="${3:-}" want="${4:-latest}" file best=''
+  # Walk oldest-first and keep the last verified match, so the newest package
+  # wins without depending on `sort -V`'s treatment of the version field.
   while IFS= read -r file; do
+    [ -n "$file" ] || continue
     package_matches "${file##*/}" "$source" "$kernel" "$series" "$want" || continue
-    if md5_ok "$file"; then printf '%s\n' "$file"; return 0; fi
-  done < <(printf '%s\n' "$(package_dir "$kernel")"/*.txz | sort -Vr)
-  return 1
+    md5_ok "$file" || continue
+    best="$file"
+  done < <(sort_by_version < <(printf '%s\n' "$(package_dir "$kernel")"/*.txz))
+  [ -n "$best" ] || return 1
+  printf '%s\n' "$best"
 }
 
 # The Slackware package database identifies rebuilds that modinfo cannot see.
@@ -100,7 +157,7 @@ installed_package() {
       package_matches "$name" "$source" "$kernel" || continue
       printf '%s\n' "$name"
     done
-  done | sort -Vu | tail -1
+  done | sort_by_version | tail -1
 }
 
 nvidia_gpu_ids() {
@@ -152,7 +209,7 @@ release_assets() {
   jq -e '.assets | type == "array"' <<< "$data" >/dev/null 2>&1 || return 1
   while IFS= read -r name; do
     if package_matches "$name" "$source" "$kernel" "$series" "$want"; then printf '%s\n' "$name"; fi
-  done < <(jq -r '.assets[]?.name // empty' <<< "$data") | sort -Vu
+  done < <(jq -r '.assets[]?.name // empty' <<< "$data") | sort_by_version
 }
 
 is_chinese() {

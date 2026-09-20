@@ -336,6 +336,50 @@ class Regressions(unittest.TestCase):
         self.assertFalse(self.box.events('upgradepkg'))
         self.assertFalse(any('/releases/download/' in str(event) for event in self.box.events('curl')))
 
+    def test_i915_update_detected_when_the_newer_version_has_fewer_digits(self):
+        # The i915 version is a dot-stripped upstream date: 2026.08.12.1 packs to
+        # the 9-digit 202608121 while 2026.09.16 packs to the 8-digit 20260916.
+        # `sort -V` compares a digit run by value, so the installed 202608121
+        # outranked every later release and no update was ever reported.
+        old=self.box.package(source='i915')
+        self.box.installed(old)
+        middle=self.box.package(source='i915',version='20260914',remote=True)
+        new=self.box.package(source='i915',version='20260916',remote=True)
+        self.box.settings(intel_installed='true')
+        drivers=self.action_json('check_updates',refresh='true')['updates']['drivers']
+        self.assertEqual(drivers['i915']['status'],'available')
+        self.assertEqual(drivers['i915']['current'],old)
+        self.assertEqual(drivers['i915']['latest'],new)
+        self.assertNotEqual(drivers['i915']['latest'],middle)
+
+    def test_intel_upgrade_downloads_the_newest_remote_version(self):
+        # The release carries every version it ever built, so the 8-digit
+        # 20260916 has to win over the 9-digit 202608121 rather than lose to it.
+        self.box.settings(intel_installed='true')
+        self.box.package(source='i915',kernel=NEXT_KERNEL,version='202608121',remote=True)
+        self.box.package(source='i915',kernel=NEXT_KERNEL,version='20260914',remote=True)
+        new=self.box.package(source='i915',kernel=NEXT_KERNEL,version='20260916',remote=True)
+        self.assertOK(self.box.helper('upgrade-check.sh','auto'))
+        self.assertEqual(self.load_upgrade()['intel_package'],new)
+
+    def test_intel_upgrade_uses_the_newest_cached_package(self):
+        # find_package() must pick the newest verified cache entry, otherwise an
+        # update installs the older package that is already on the flash drive.
+        self.box.settings(intel_installed='true')
+        self.box.package(source='i915',kernel=NEXT_KERNEL,version='202608121')
+        new=self.box.package(source='i915',kernel=NEXT_KERNEL,version='20260916')
+        self.assertOK(self.box.helper('upgrade-check.sh','auto'))
+        self.assertEqual(self.load_upgrade()['intel_package'],new)
+
+    def test_installed_package_reports_the_newest_entry(self):
+        self.box.package(source='i915')
+        new=self.box.package(source='i915',version='20260916')
+        self.box.installed(f'i915-sriov-202608121-{KERNEL}-1.txz')
+        self.box.installed(new)
+        result=self.box.shell(f'source {BASE}/include/common.sh; installed_package i915')
+        self.assertOK(result)
+        self.assertEqual(result.stdout.strip(),new)
+
     def test_update_status_invalidates_after_install_disable_or_kernel_change(self):
         old=self.box.package(); self.box.installed(old)
         new=self.box.package(build=2,remote=True)

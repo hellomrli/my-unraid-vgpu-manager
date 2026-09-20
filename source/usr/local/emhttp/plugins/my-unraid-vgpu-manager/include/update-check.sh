@@ -47,7 +47,7 @@ if ! flock -n 7; then
 fi
 
 check_driver() {
-  local source="$1" series="$2" item current names latest status marker
+  local source="$1" series="$2" item current names latest status marker current_key latest_key
   item="$(jq -c --arg source "$source" '.drivers[$source]' <<< "$BASE")"
   status="$(jq -r '.status' <<< "$item")"
   marker="/var/tmp/${PLUGIN}-update-${source}"
@@ -63,7 +63,15 @@ check_driver() {
     latest="$(printf '%s\n' "$names" | tail -1)"
     if [ -n "$latest" ]; then
       status=current
-      if [ "$latest" != "$current" ] && [ "$(printf '%s\n%s\n' "$current" "$latest" | sort -V | tail -1)" = "$latest" ]; then status=available; fi
+      # Compare normalized version keys, never `sort -V` over the file names: the
+      # i915 version field encodes a date, so the shorter newer number used to
+      # lose against the longer older one and no update was ever reported.
+      current_key="$(package_version_key "$current")" || current_key=''
+      latest_key="$(package_version_key "$latest")" || latest_key=''
+      if [ -n "$latest_key" ] && [ "$latest" != "$current" ] &&
+         [[ "$latest_key" > "$current_key" || "$latest_key" = "$current_key" ]]; then
+        status=available
+      fi
     fi
   fi
   if [ "$status" = available ] && [ "$MODE" = auto ]; then

@@ -2,11 +2,11 @@
 <!DOCTYPE PLUGIN [
   <!ENTITY name      "my-unraid-vgpu-manager">
   <!ENTITY author    "hellomrli">
-  <!ENTITY version   "2026.09.09a">
+  <!ENTITY version   "2026.09.20">
   <!ENTITY launch    "Settings/my-unraid-vgpu-manager">
   <!ENTITY gitURL    "https://github.com/&author;/&name;/raw/master">
   <!ENTITY pluginURL "&gitURL;/&name;.plg">
-  <!ENTITY md5       "a57afa96f5c996b9c8d3108372cc0fbe">
+  <!ENTITY md5       "63c6d4e1cf5448a14c1edfb34b5def76">
   <!ENTITY plugin    "/boot/config/plugins/&name;">
   <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
   <!ENTITY packages  "/boot/config/plugins/&name;/packages">
@@ -15,6 +15,21 @@
 <PLUGIN  name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" min="6.11.5" support="https://github.com/&author;/&name;">
 
 <CHANGES>
+##2026.09.20
+- FIX: detect and install new Intel i915 SR-IOV releases whose version number is
+  shorter than the installed one. The i915 version is a dot-stripped upstream
+  date, so 2026.08.12.1 packed to the 9-digit 202608121 while 2026.09.16 packed
+  to the 8-digit 20260916. `sort -V` compares a digit run by numeric value and
+  therefore ranked the installed older release above every later one, so update
+  checks reported "current" and updating re-downloaded the old package.
+- FIX: order driver packages by a normalized version key instead of `sort -V` in
+  the update check, the GitHub asset listing, the local cache lookup and the
+  installed-package lookup. Dotted NVIDIA versions (535.309.01) and both i915
+  naming forms now share one ordering, so an update can no longer select or
+  reinstall an older cached package.
+- TEST: cover the i915 digit-count regression for update detection, remote asset
+  selection, cache selection and the installed-package lookup.
+
 ##2026.09.09a
 - FIX: submit text forms using Unraid's URL-encoded format. Multipart FormData
   requests could stall in the native authentication subrequest before the
