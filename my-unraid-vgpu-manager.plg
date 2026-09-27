@@ -2,19 +2,41 @@
 <!DOCTYPE PLUGIN [
   <!ENTITY name      "my-unraid-vgpu-manager">
   <!ENTITY author    "hellomrli">
-  <!ENTITY version   "2026.09.20">
+  <!ENTITY version   "2026.09.27">
   <!ENTITY launch    "Settings/my-unraid-vgpu-manager">
   <!ENTITY gitURL    "https://github.com/&author;/&name;/raw/master">
   <!ENTITY pluginURL "&gitURL;/&name;.plg">
-  <!ENTITY md5       "63c6d4e1cf5448a14c1edfb34b5def76">
+  <!ENTITY md5       "2e64ce2c4c8ef85869afa3f6071a9b1c">
   <!ENTITY plugin    "/boot/config/plugins/&name;">
   <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
   <!ENTITY packages  "/boot/config/plugins/&name;/packages">
 ]>
 
-<PLUGIN  name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" min="6.11.5" support="https://github.com/&author;/&name;">
+<PLUGIN  name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" min="7.2.3" support="https://github.com/&author;/&name;">
 
 <CHANGES>
+##2026.09.27
+- FIX: order package builds numerically. Build -10 was sorted below -2, so the
+  tenth rebuild of a driver would never be selected. Update checks now offer
+  only strictly newer packages and can no longer suggest a downgrade.
+- FIX: keep NVIDIA licensing working after a reboot when the license server
+  runs in a container or VM on this host. The client token is saved on the
+  flash drive for its endpoint, and licensing is retried after the array starts.
+- FIX: the settings page still opens when the driver update status cannot be
+  read, and shows the check as failed instead.
+- FIX: register scheduled checks through a plugin .cron file and update_cron,
+  so Unraid no longer discards them when it rebuilds the system crontab. The
+  per-minute upgrade check no longer starts PHP when the boot image is
+  unchanged; its log is kept small and no longer receives progress meters.
+- FIX: installing or switching the NVIDIA series only saves the series after the
+  package is installed. Uninstalling Intel reloads the stock i915 driver.
+- CHG: manage the Intel GPU that exposes SR-IOV when several are present.
+- CHG: verify a .sha256 file in addition to .md5 when a release publishes one.
+- CHG: require Unraid 7.2.3 or newer, matching the kernels that driver
+  packages are built for.
+- CHG: settings are not rewritten on the flash drive when a value is unchanged;
+  shell messages no longer start PHP to read the interface language.
+
 ##2026.09.20
 - FIX: detect and install new Intel i915 SR-IOV releases whose version number is
   shorter than the installed one. The i915 version is a dot-stripped upstream
@@ -277,6 +299,8 @@ crontab -l 2&gt;/dev/null | grep -Fv '/usr/local/emhttp/plugins/my-unraid-vgpu-m
 # A running VM may still hold a device; never force-stop it during plugin removal.
 /bin/bash /usr/local/emhttp/plugins/my-unraid-vgpu-manager/scripts/rc.vgpu stop || true
 rm -f /usr/local/emhttp/plugins/dynamix.plugin.manager/post-hooks/my-unraid-vgpu-manager
+# The plugin manager rebuilds the crontab from .cron files after removal.
+rm -f /boot/config/plugins/my-unraid-vgpu-manager/my-unraid-vgpu-manager.cron
 rm -f /boot/config/modprobe.d/my-unraid-vgpu-manager-i915.conf /etc/modprobe.d/my-unraid-vgpu-manager-i915.conf
 rm -f /var/tmp/my-unraid-vgpu-manager-upgrade.json /var/tmp/my-unraid-vgpu-manager-updates.json /var/tmp/my-unraid-vgpu-manager-update-*
 removepkg &name;-&version;

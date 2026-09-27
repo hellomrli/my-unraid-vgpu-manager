@@ -20,6 +20,11 @@ set_setting() (
   mkdir -p "$PLGCFG" || return 1
   exec 8>"${SETTINGS}.lock"
   flock -x 8 || return 1
+  # Settings live on the flash drive. Skip the rewrite when nothing changes.
+  if [ -f "$SETTINGS" ] && [ "$(grep -c "^${key}=" "$SETTINGS")" = 1 ] &&
+     grep -qxF -- "${key}=${value}" "$SETTINGS"; then
+    return 0
+  fi
   tmp="$(mktemp "${PLGCFG}/.settings.XXXXXX")" || return 1
   if [ -f "$SETTINGS" ]; then
     while IFS= read -r line || [ -n "$line" ]; do
@@ -73,14 +78,19 @@ version_key() {
   printf '%s\n' "$key"
 }
 
+# The package build counter is the last key field. Comparing it as text
+# ranked -10 below -2, so the tenth rebuild would never be selected.
 package_version_key() {
-  local name="${1##*/}" rest
+  local name="${1##*/}" rest key build
   case "$name" in
     nvidia-*) rest="${name#nvidia-}" ;;
     i915-sriov-*) rest="${name#i915-sriov-}" ;;
     *) return 1 ;;
   esac
-  version_key "${rest%%-*}"
+  key="$(version_key "${rest%%-*}")" || return 1
+  build="${name##*-}"; build="${build%.txz}"
+  [[ "$build" =~ ^[0-9]{1,9}$ ]] || build=0
+  printf '%s%010d\n' "$key" "$((10#$build))"
 }
 
 # Oldest-first ordering for package names or paths. Entries without a
@@ -123,13 +133,22 @@ package_matches() {
   [[ "$build" =~ ^[0-9]+[.]txz$ ]]
 }
 
-md5_ok() {
-  local file="$1" expected actual
-  [ -s "$file" ] && [ -f "${file}.md5" ] || return 1
-  expected="$(awk 'NR == 1 {print tolower($1)}' "${file}.md5")"
-  [[ "$expected" =~ ^[0-9a-f]{32}$ ]] || return 1
-  actual="$(md5sum -- "$file")" || return 1
+checksum_ok() {
+  local file="$1" kind="$2" length expected actual
+  case "$kind" in md5) length=32 ;; sha256) length=64 ;; *) return 1 ;; esac
+  expected="$(awk 'NR == 1 {print tolower($1)}' "${file}.${kind}")"
+  [[ "$expected" =~ ^[0-9a-f]{$length}$ ]] || return 1
+  actual="$("${kind}sum" -- "$file")" || return 1
   [ "${actual%% *}" = "$expected" ]
+}
+
+# Releases publish .md5 files. A .sha256 file, when the release provides one,
+# must match as well.
+package_ok() {
+  local file="$1"
+  [ -s "$file" ] && [ -f "${file}.md5" ] || return 1
+  checksum_ok "$file" md5 || return 1
+  [ ! -e "${file}.sha256" ] || checksum_ok "$file" sha256
 }
 
 find_package() {
@@ -139,7 +158,7 @@ find_package() {
   while IFS= read -r file; do
     [ -n "$file" ] || continue
     package_matches "${file##*/}" "$source" "$kernel" "$series" "$want" || continue
-    md5_ok "$file" || continue
+    package_ok "$file" || continue
     best="$file"
   done < <(sort_by_version < <(printf '%s\n' "$(package_dir "$kernel")"/*.txz))
   [ -n "$best" ] || return 1
@@ -212,9 +231,15 @@ release_assets() {
   done < <(jq -r '.assets[]?.name // empty' <<< "$data") | sort_by_version
 }
 
+# Read [display] locale from Unraid's settings without starting PHP.
 is_chinese() {
   local language
-  language="$(php -r '$c=@parse_ini_file("/boot/config/plugins/dynamix/dynamix.cfg",true,INI_SCANNER_RAW); echo $c["display"]["locale"] ?? "";' 2>/dev/null)"
+  language="$(awk -F= '
+    /^[[:space:]]*\[/ { section = $0; gsub(/[][[:space:]]/, "", section); next }
+    section == "display" {
+      key = $1; gsub(/[[:space:]]/, "", key)
+      if (key == "locale") { value = substr($0, index($0, "=") + 1); gsub(/^[[:space:]"]+|[[:space:]"]+$/, "", value); print value; exit }
+    }' /boot/config/plugins/dynamix/dynamix.cfg 2>/dev/null)"
   case "$language" in [zZ][hH]*) return 0 ;; *) return 1 ;; esac
 }
 
@@ -225,6 +250,15 @@ bilingual() {
 vgpu_notify() {
   /usr/local/emhttp/plugins/dynamix/scripts/notify -e "Unraid vGPU Manager" \
     -d "$1" -i "${2:-normal}" -l "${3:-/Settings/${PLUGIN}}"
+}
+
+# Logs under /var/log live in a small RAM filesystem. Keep the newest part.
+trim_log() {
+  local file="$1" limit="${2:-1048576}" size
+  size="$(stat -c %s -- "$file" 2>/dev/null)" || return 0
+  [ "$size" -gt "$limit" ] || return 0
+  tail -c "$((limit / 2))" -- "$file" > "${file}.tmp" && cat -- "${file}.tmp" > "$file"
+  rm -f -- "${file}.tmp"
 }
 
 # Serialize runtime actions, including PHP mdev/VM operations. The web helper

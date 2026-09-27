@@ -12,7 +12,7 @@
 
 <p align="center">
   <a href="https://github.com/hellomrli/my-unraid-vgpu-manager/actions/workflows/check.yml"><img src="https://github.com/hellomrli/my-unraid-vgpu-manager/actions/workflows/check.yml/badge.svg" alt="Validation workflow status"></a>
-  <a href="https://unraid.net/"><img src="https://img.shields.io/badge/Unraid-6.11.5%2B-orange" alt="Requires Unraid 6.11.5 or newer"></a>
+  <a href="https://unraid.net/"><img src="https://img.shields.io/badge/Unraid-7.2.3%2B-orange" alt="Requires Unraid 7.2.3 or newer"></a>
 </p>
 
 ## Why this plugin
@@ -100,7 +100,7 @@ Two behaviours are worth knowing before you start:
 
 ## Quick install
 
-Requires Unraid 6.11.5 or newer and a supported GPU. Install the plugin from the Unraid WebUI:
+Requires Unraid 7.2.3 or newer and a supported GPU. Install the plugin from the Unraid WebUI:
 
 ```text
 Plugins -> Install Plugin
@@ -155,7 +155,7 @@ Both driver repositories publish one Release tag per full kernel version, for ex
 - NVIDIA: [hellomrli/my-nvidia-vgpu-driver](https://github.com/hellomrli/my-nvidia-vgpu-driver)
 - Intel: [hellomrli/my-i915-sriov-driver](https://github.com/hellomrli/my-i915-sriov-driver), built from [strongtz/i915-sriov-dkms](https://github.com/strongtz/i915-sriov-dkms)
 
-Packages are cached at `/boot/config/plugins/my-unraid-vgpu-manager/packages/<kernel>/`. If you place a package there by hand, add its `.txz.md5` next to it; the plugin verifies the file by content and does not execute or trust paths taken from the checksum file. A package name has to match both the kernel and the driver series.
+Packages are cached at `/boot/config/plugins/my-unraid-vgpu-manager/packages/<kernel>/`. If you place a package there by hand, add its `.txz.md5` next to it (a `.txz.sha256`, if present, must match too); the plugin verifies the file by content and does not execute or trust paths taken from the checksum file. A package name has to match both the kernel and the driver series.
 
 If no package exists yet for a new kernel, build one in the driver repository. The plugin will not install a package built for a different kernel, and it does not report a failed download as an updated driver.
 
@@ -181,7 +181,7 @@ CI runs the same commands on `ubuntu-24.04` and uploads the interface screenshot
 
 | Topic | Link |
 |---|---|
-| Fix history and verification boundaries | [REVIEW.md](REVIEW.md) |
+| Fix history and verification boundaries | [docs/REVIEW.md](docs/REVIEW.md) |
 | Plugin manifest and changelog | [my-unraid-vgpu-manager.plg](my-unraid-vgpu-manager.plg) |
 | NVIDIA driver packages | [hellomrli/my-nvidia-vgpu-driver](https://github.com/hellomrli/my-nvidia-vgpu-driver) |
 | Intel driver packages | [hellomrli/my-i915-sriov-driver](https://github.com/hellomrli/my-i915-sriov-driver) |

@@ -1,8 +1,13 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")/.."
+# Tools from scripts/fetch-tools.sh, when system packages are unavailable.
+if [ -d .tools ]; then
+  export PATH="$PWD/.tools:$PATH"
+  [ ! -x .tools/php ] || export VGPU_TEST_PHP="${VGPU_TEST_PHP:-$PWD/.tools/php}"
+fi
 for command in php python3 node shellcheck bwrap jq; do
-  command -v "$command" >/dev/null || { echo "Required check tool is missing: $command" >&2; exit 1; }
+  command -v "$command" >/dev/null || { echo "Required check tool is missing: $command (php/shellcheck: run scripts/fetch-tools.sh)" >&2; exit 1; }
 done
 while IFS= read -r -d '' file; do
   case "$file" in

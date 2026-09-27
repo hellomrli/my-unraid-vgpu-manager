@@ -1,6 +1,30 @@
 # 项目审查与修复记录
 
-审查日期：2026-09-08；补充修复日期：2026-09-09、2026-09-20。本报告记录截至 **2026.09.20** 的修复、验证结果和后续事项。
+审查日期：2026-09-08；补充修复日期：2026-09-09、2026-09-20、2026-09-27。本报告记录截至 **2026.09.27** 的修复、验证结果和后续事项。
+
+## 第二轮审查修复（2026.09.27）
+
+| 级别 | 问题及影响 | 处理 |
+|---|---|---|
+| 高 | 同版本构建号按文本排序，`-10` 排在 `-2` 之前；更新检查只要文件名不同就报告“可更新”，可能提示降级 | 构建号作为版本键第 7 字段按数值比较；更新检查改为严格大于 |
+| 高 | 授权令牌只存在内存中，启动时在 Docker / VM 之前获取；本机容器内的 FastAPI-DLS 此时不可达，且之后不再重试 | 令牌连同服务地址、端口、证书设置保存到启动盘，地址不变时离线复用；阵列启动后后台重试授权，不占用操作锁 |
+| 高 | 页面加载时读取更新状态失败会抛出异常，导致设置页无法打开 | 失败时回退为“检查失败”状态，页面正常显示 |
+| 中 | 直接用 `crontab` 写入计划任务，Unraid 重建系统 crontab 时会丢失；每分钟检查都启动一次 PHP | 改为写入插件 `.cron` 文件并调用 `update_cron`，清理旧版直写的条目；启动镜像未变化时复用已读取的内核版本 |
+| 中 | 前端资源的缓存参数写死为旧版本号 | 按文件内容哈希生成缓存参数 |
+| 中 | 驱动包只有与包同源的 MD5 | Release 同时提供 `.sha256` 时一并校验，并保存到缓存；签名需要驱动仓库配合，见下文 |
+| 中 | 最低版本 6.11.5，而驱动包只为 Unraid 7 的内核构建 | 最低版本提高到 7.2.3 |
+| 低 | 系列切换失败后已改写系列偏好；卸载 Intel 后宿主核显无驱动；多块 Intel 显卡只取第一块；值不变也重写启动盘设置；通知来源名称不一致；日志无上限且含下载进度条；`bilingual` 每次启动 PHP | 安装成功后才保存系列；卸载后加载原生 i915；优先选择支持 SR-IOV 的设备（页面与脚本一致）；值不变时跳过写入；统一使用 `vgpu_notify`；日志超过 1 MiB 截断，后台下载关闭进度条；用 awk 读取界面语言 |
+
+工程方面：`packages/` 只保留当前安装包，构建脚本会删除旧包，`--check` 发现旧包时失败；CI 的 Action 固定到提交 SHA 并加入并发控制；新增 `scripts/fetch-tools.sh`，下载固定版本并校验 SHA-256 的 PHP 和 ShellCheck，没有系统软件包的主机也能运行 `scripts/check.sh`；本文件移至 `docs/`。
+
+**验证**：新增 11 项回归测试，对应上表各项。这 11 项在修复前的源码上全部失败（9 项断言失败、2 项报错），修复后全部通过；全套 64 项测试、语法和 ShellCheck 检查、构建一致性检查与浏览器交互检查均通过。
+
+**未做及需确认**：
+
+- 未在实机上验证。`update_cron` 的行为依据 Unraid webgui 源码判断：插件安装时注册链接要等安装脚本结束后才创建，因此首次安装时会在后台等待注册后再调用 `update_cron`。
+- 安装地址仍为 `raw/master`，未改为按 Release 或标签分发，因为改动 `pluginURL` 会影响已安装用户的更新来源，需要单独规划迁移。
+- 驱动包签名（如 minisign 或 GitHub artifact attestation）需要在配套驱动仓库中生成，本轮未实现；目前两个驱动仓库的 Release 只发布 `.md5`。
+- 启动盘上保存的授权令牌为明文，与 Unraid 其他插件的配置保存方式一致。
 
 ## Intel i915 更新检测与更新失效的修复（2026.09.20）
 
@@ -11,11 +35,11 @@
 | 位置 | 影响 |
 |---|---|
 | `release_assets()`（common.sh） | GitHub 资产顺序错误，`tail -1` 取到旧包，更新检查恒为已是最新 |
-| [download.sh](source/usr/local/emhttp/plugins/my-unraid-vgpu-manager/include/download.sh) | 继承上述顺序，强制刷新也下载旧包 |
+| [download.sh](../source/usr/local/emhttp/plugins/my-unraid-vgpu-manager/include/download.sh) | 继承上述顺序，强制刷新也下载旧包 |
 | `find_package()`（common.sh） | 多个本地缓存包中选中最旧的一个交给安装步骤 |
 | `installed_package()`（common.sh） | 存在多条已安装记录时报出最旧版本 |
 
-[update-check.sh](source/usr/local/emhttp/plugins/my-unraid-vgpu-manager/include/update-check.sh) 还用 `sort -V` 直接比较当前与最新的文件名，同样得出相反结论。这既是检测不到更新的原因，也是更新后仍是旧驱动的原因。
+[update-check.sh](../source/usr/local/emhttp/plugins/my-unraid-vgpu-manager/include/update-check.sh) 还用 `sort -V` 直接比较当前与最新的文件名，同样得出相反结论。这既是检测不到更新的原因，也是更新后仍是旧驱动的原因。
 
 **修复**：新增 `version_key()` 把版本归一化为定宽、可字典序比较的键：带小数点的版本按字段拆分（`535.309.01`、`2026.09.16`），旧的去点日期形式还原成 `YYYY MM DD [构建号]`。两种命名映射到同一六字段空间，`2026.09.16` 与 `20260916` 得到相同的键，混合命名也能正确排序。`sort_by_version()` 取代四处 `sort -V`，更新检查改为比较归一化键。
 
@@ -79,7 +103,7 @@
 | 中 | NVIDIA 系列判断及硬件说明不够准确，系统升级时存在意外切换分支的风险 | 共享 PCI ID 元数据；新安装按硬件推荐，系统升级保持已安装系列；缩小未验证硬件的支持声明 |
 | 低 | 界面缺少中文、HTTP 环境复制功能受限、移动页面显示不完整 | 自动跟随 Unraid 的中文 / 英文，保留原布局，完善剪贴板回退和移动显示 |
 
-主要实现见 [rc.vgpu](source/usr/local/emhttp/plugins/my-unraid-vgpu-manager/scripts/rc.vgpu)、[common.sh](source/usr/local/emhttp/plugins/my-unraid-vgpu-manager/include/common.sh)、[download.sh](source/usr/local/emhttp/plugins/my-unraid-vgpu-manager/include/download.sh) 和 [actions.php](source/usr/local/emhttp/plugins/my-unraid-vgpu-manager/include/actions.php)。
+主要实现见 [rc.vgpu](../source/usr/local/emhttp/plugins/my-unraid-vgpu-manager/scripts/rc.vgpu)、[common.sh](../source/usr/local/emhttp/plugins/my-unraid-vgpu-manager/include/common.sh)、[download.sh](../source/usr/local/emhttp/plugins/my-unraid-vgpu-manager/include/download.sh) 和 [actions.php](../source/usr/local/emhttp/plugins/my-unraid-vgpu-manager/include/actions.php)。
 
 ## 新增：按用户启用状态准备系统升级驱动
 
@@ -95,7 +119,7 @@ Unraid 更新写入启动盘后，从 `/boot/bzimage` 的 Linux 启动头读取�
 
 “启用”使用用户安装驱动后保存的管理状态判断；检测到硬件或缓存中有旧包都不构成启用。开始下载每个驱动前会再次检查其状态。自动准备可独立关闭；通过更新通知打开的选项可手动重试检测到的目标内核。
 
-预下载不替换当前运行内核的驱动、不自动重启，也不拦截 Unraid 重启按钮。新内核启动后，只从匹配且校验通过的本地缓存恢复已启用驱动。实现见 [upgrade-check.sh](source/usr/local/emhttp/plugins/my-unraid-vgpu-manager/include/upgrade-check.sh) 和 [kernel.php](source/usr/local/emhttp/plugins/my-unraid-vgpu-manager/include/kernel.php)。
+预下载不替换当前运行内核的驱动、不自动重启，也不拦截 Unraid 重启按钮。新内核启动后，只从匹配且校验通过的本地缓存恢复已启用驱动。实现见 [upgrade-check.sh](../source/usr/local/emhttp/plugins/my-unraid-vgpu-manager/include/upgrade-check.sh) 和 [kernel.php](../source/usr/local/emhttp/plugins/my-unraid-vgpu-manager/include/kernel.php)。
 
 ## 验证
 
@@ -105,7 +129,7 @@ Unraid 更新写入启动盘后，从 `/boot/bzimage` 的 Linux 启动头读取�
 - 通过可重复构建检查，确认 `packages/my-unraid-vgpu-manager-2026.09.20.txz` 与 `source/` 完全一致，且 MD5 与 `.plg` 清单一致。
 - 新增 CI 工作流，运行上述检查并保存浏览器截图。以上结果来自发布前的本地验证，远端结果见 [GitHub Actions](https://github.com/hellomrli/my-unraid-vgpu-manager/actions/workflows/check.yml)。
 
-测试入口为 [scripts/check.sh](scripts/check.sh) 和 [tests/browser_server.py](tests/browser_server.py)。驱动命令运行在 bubblewrap 隔离的模拟 Unraid 文件系统中，替换了网络、包管理和 GPU 命令；浏览器连接本地测试服务。缺少系统 PHP 或 ShellCheck 时，可把便携版工具解压到同一目录并用 `VGPU_TEST_PHP` 指向该 PHP，[tests/sandbox.py](tests/sandbox.py) 会把该目录挂载进隔离环境（本轮即在无系统 PHP 的主机上以 PHP 8.4.11 与 ShellCheck 0.10.0 运行整套检查）。
+测试入口为 [scripts/check.sh](../scripts/check.sh) 和 [tests/browser_server.py](../tests/browser_server.py)。驱动命令运行在 bubblewrap 隔离的模拟 Unraid 文件系统中，替换了网络、包管理和 GPU 命令；浏览器连接本地测试服务。缺少系统 PHP 或 ShellCheck 时，可把便携版工具解压到同一目录并用 `VGPU_TEST_PHP` 指向该 PHP，[tests/sandbox.py](../tests/sandbox.py) 会把该目录挂载进隔离环境（本轮即在无系统 PHP 的主机上以 PHP 8.4.11 与 ShellCheck 0.10.0 运行整套检查）。
 
 ## 仍需验证及后续改进
 

@@ -8,6 +8,12 @@ MODE="${1:-auto}"
 STATE="/var/tmp/${PLUGIN}-upgrade.json"
 NOTICE_URL="/Settings/${PLUGIN}?kernel_upgrade=1#kernel-upgrade-panel"
 case "$MODE" in auto|prepare) ;; *) exit 1 ;; esac
+LOG="/var/log/${PLUGIN}-upgrade.log"
+if [ "$MODE" = auto ]; then
+  # Cron runs this every minute and appends to a log in RAM.
+  trim_log "$LOG"
+  export VGPU_QUIET=1
+fi
 AUTO_DOWNLOAD=true
 [ "$MODE" != auto ] || [ "$(setting kernel_upgrade_check)" != false ] || AUTO_DOWNLOAD=false
 
@@ -20,7 +26,20 @@ if [ "$NV" != true ] && [ "$INTEL" != true ]; then
   exit 0
 fi
 
-TARGET="${2:-$(php "$EMHTTP/include/kernel.php" 2>/dev/null)}"
+# The per-minute check reuses the kernel read from an unchanged boot image
+# instead of starting PHP each time.
+boot_kernel() {
+  local cache="/var/tmp/${PLUGIN}-boot-kernel" signature cached kernel
+  signature="$(stat -c '%d:%i:%s:%.9Y:%.9Z' /boot/bzimage 2>/dev/null)" || signature=''
+  cached="$(cat "$cache" 2>/dev/null)"
+  if [ "$MODE" = auto ] && [ -n "$signature" ] && [ "${cached%%|*}" = "$signature" ]; then
+    printf '%s\n' "${cached#*|}"; return 0
+  fi
+  kernel="$(php "$EMHTTP/include/kernel.php" 2>/dev/null)" || kernel=''
+  if [ -n "$signature" ]; then printf '%s|%s\n' "$signature" "$kernel" > "$cache" 2>/dev/null || true; fi
+  printf '%s\n' "$kernel"
+}
+TARGET="${2:-$(boot_kernel)}"
 if ! valid_kernel "$TARGET"; then
   [ "$MODE" = auto ] && exit 0
   bilingual 'ERROR: cannot read the next boot kernel. Enter its full release, for example 6.18.47-Unraid.' '错误：无法读取下次启动的内核，请填写完整版本，例如 6.18.47-Unraid。' >&2

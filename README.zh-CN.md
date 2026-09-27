@@ -12,7 +12,7 @@
 
 <p align="center">
   <a href="https://github.com/hellomrli/my-unraid-vgpu-manager/actions/workflows/check.yml"><img src="https://github.com/hellomrli/my-unraid-vgpu-manager/actions/workflows/check.yml/badge.svg" alt="校验工作流状态"></a>
-  <a href="https://unraid.net/"><img src="https://img.shields.io/badge/Unraid-6.11.5%2B-orange" alt="需要 Unraid 6.11.5 或更新版本"></a>
+  <a href="https://unraid.net/"><img src="https://img.shields.io/badge/Unraid-7.2.3%2B-orange" alt="需要 Unraid 7.2.3 或更新版本"></a>
 </p>
 
 ## 这个插件解决什么
@@ -100,7 +100,7 @@ https://github.com/hellomrli/my-unraid-vgpu-manager/raw/master/my-unraid-vgpu-ma
 
 ## 快速安装
 
-需要 Unraid 6.11.5 或更新版本，以及一块受支持的显卡。在 Unraid 界面里安装：
+需要 Unraid 7.2.3 或更新版本，以及一块受支持的显卡。在 Unraid 界面里安装：
 
 ```text
 Plugins -> Install Plugin
@@ -155,7 +155,7 @@ Unraid 把新系统写入启动盘后，插件读取 `/boot/bzimage` 中**实际
 - NVIDIA：[hellomrli/my-nvidia-vgpu-driver](https://github.com/hellomrli/my-nvidia-vgpu-driver)
 - Intel：[hellomrli/my-i915-sriov-driver](https://github.com/hellomrli/my-i915-sriov-driver)，基于 [strongtz/i915-sriov-dkms](https://github.com/strongtz/i915-sriov-dkms) 构建
 
-驱动包缓存在 `/boot/config/plugins/my-unraid-vgpu-manager/packages/<kernel>/`。手动放置包时，需要同时提供对应的 `.txz.md5`；插件按文件内容校验，不执行也不信任 checksum 文件里写的路径。包名必须同时匹配内核与驱动系列。
+驱动包缓存在 `/boot/config/plugins/my-unraid-vgpu-manager/packages/<kernel>/`。手动放置包时，需要同时提供对应的 `.txz.md5`（如同时存在 `.txz.sha256`，也必须一致）；插件按文件内容校验，不执行也不信任 checksum 文件里写的路径。包名必须同时匹配内核与驱动系列。
 
 如果新内核还没有对应的包，可以在驱动仓库里构建。插件不会把为其他内核构建的包装上去，也不会把下载失败说成驱动已更新。
 
@@ -181,7 +181,7 @@ CI 在 `ubuntu-24.04` 上执行同样的命令，并把抓取到的界面截图�
 
 | 主题 | 链接 |
 |---|---|
-| 修复记录与验证边界 | [REVIEW.md](REVIEW.md) |
+| 修复记录与验证边界 | [docs/REVIEW.md](docs/REVIEW.md) |
 | 插件清单与变更日志 | [my-unraid-vgpu-manager.plg](my-unraid-vgpu-manager.plg) |
 | NVIDIA 驱动包 | [hellomrli/my-nvidia-vgpu-driver](https://github.com/hellomrli/my-nvidia-vgpu-driver) |
 | Intel 驱动包 | [hellomrli/my-i915-sriov-driver](https://github.com/hellomrli/my-i915-sriov-driver) |

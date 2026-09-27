@@ -120,6 +120,26 @@ function vgpu_driver_updates($mode = 'status') {
     unset($driver);
     return $state;
 }
+// A page must never fail because the update metadata could not be read.
+function vgpu_driver_updates_or_error($enabled) {
+    try {
+        return vgpu_driver_updates();
+    } catch (Throwable $error) {
+        $drivers = [];
+        foreach ($enabled as $source => $on) {
+            $drivers[$source] = ['status'=>$on ? 'error' : 'disabled', 'current'=>'', 'latest'=>'', 'series'=>'',
+                'message'=>vgpu_t($on ? 'Update check failed. Try again.' : 'Not enabled')];
+        }
+        return ['drivers' => $drivers];
+    }
+}
+// Content-based cache key: a new release reloads changed assets, even when
+// two releases share a date (and therefore a packaged modification time).
+function vgpu_asset($name) {
+    global $vgpu_emhttp;
+    $hash = @md5_file("$vgpu_emhttp/include/$name");
+    return "/plugins/my-unraid-vgpu-manager/include/$name?v=".($hash ? substr($hash, 0, 12) : '0');
+}
 function vgpu_package_label($package) {
     if (preg_match('/^(?:nvidia|i915-sriov)-([0-9.]+)-.+-([0-9]+)\.txz$/D', $package, $match)) {
         return vgpu_t('{version} (build {build})', ['version'=>$match[1], 'build'=>$match[2]]);

@@ -1,4 +1,5 @@
-# 插件包（由 plg 的 FILE 从 Release 下载，本地保留一个即可）
+# Plugin package: the .plg downloads packages/<name>-<version>.txz from the master
+# branch. Only the current version is committed; build-plugin.py removes others.
 packages/*.txz
 !packages/my-unraid-vgpu-manager-*.txz
 
@@ -7,3 +8,4 @@ __pycache__/
 *.pyc
 node_modules/
 tests/artifacts/
+.tools/

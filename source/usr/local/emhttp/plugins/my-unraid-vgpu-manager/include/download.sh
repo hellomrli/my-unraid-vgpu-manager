@@ -52,7 +52,7 @@ PKG="$(printf '%s\n' "$AVAIL" | tail -1)"
   bilingual "ERROR: no matching ${SOURCE} package for ${TARGET_KERNEL} (version ${WANT})." "错误：未找到适用于 ${TARGET_KERNEL} 的 ${SOURCE} 驱动包（版本 ${WANT}）。" >&2
   exit 1
 }
-if md5_ok "${PKGDIR}/${PKG}"; then
+if package_ok "${PKGDIR}/${PKG}"; then
   bilingual "The requested package is already downloaded and verified: $PKG" "所需驱动包已下载并通过校验：$PKG"
   exit 0
 fi
@@ -62,15 +62,26 @@ STAGE="$(mktemp -d "${PKGDIR}/.download.XXXXXX")" || exit 1
 trap 'rm -rf -- "$STAGE"' EXIT
 trap 'exit 1' HUP INT TERM
 bilingual "Downloading $PKG. Wait for verification before rebooting." "正在下载 $PKG，请等待校验完成后再重启。"
-if ! curl -fL --connect-timeout 15 --max-time 1800 --speed-time 60 --speed-limit 1024 \
+# Background checks write to a log file; a progress meter would only fill it.
+PROGRESS=()
+[ "${VGPU_QUIET:-}" != 1 ] || PROGRESS=(--no-progress-meter)
+if ! curl -fL "${PROGRESS[@]}" --connect-timeout 15 --max-time 1800 --speed-time 60 --speed-limit 1024 \
      --retry 2 --output "${STAGE}/${PKG}" "${DL_URL}/${PKG}" ||
-   ! curl -fsSL --connect-timeout 10 --max-time 30 --output "${STAGE}/${PKG}.md5" "${DL_URL}/${PKG}.md5" ||
-   ! md5_ok "${STAGE}/${PKG}"; then
+   ! curl -fsSL --connect-timeout 10 --max-time 30 --output "${STAGE}/${PKG}.md5" "${DL_URL}/${PKG}.md5"; then
+  bilingual "ERROR: download or checksum failed: $PKG" "错误：驱动包下载或校验失败：$PKG" >&2
+  exit 1
+fi
+# Releases that also publish SHA-256 are verified against it as well.
+curl -fsSL --connect-timeout 10 --max-time 30 --output "${STAGE}/${PKG}.sha256" "${DL_URL}/${PKG}.sha256" >/dev/null 2>&1 ||
+  rm -f -- "${STAGE}/${PKG}.sha256"
+if ! package_ok "${STAGE}/${PKG}"; then
   bilingual "ERROR: download or checksum failed: $PKG" "错误：驱动包下载或校验失败：$PKG" >&2
   exit 1
 fi
 # Publish only complete files. Retain other drivers, branches, the running
 # kernel, rollback kernels and pre-downloaded upgrade kernels.
+rm -f -- "${PKGDIR}/${PKG}.sha256"
+if [ -f "${STAGE}/${PKG}.sha256" ]; then mv -f -- "${STAGE}/${PKG}.sha256" "${PKGDIR}/${PKG}.sha256" || exit 1; fi
 mv -f -- "${STAGE}/${PKG}.md5" "${PKGDIR}/${PKG}.md5" &&
   mv -f -- "${STAGE}/${PKG}" "${PKGDIR}/${PKG}" || exit 1
 sync -f "$PKGDIR" 2>/dev/null || sync

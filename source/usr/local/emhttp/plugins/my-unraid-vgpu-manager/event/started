@@ -1,5 +1,7 @@
 #!/bin/bash
 # Runtime restoration is completed by event/starting before VM autostart.
 # Also inspect a pending OS upgrade when the array starts.
-CHECK=/usr/local/emhttp/plugins/my-unraid-vgpu-manager/include/upgrade-check.sh
-nohup "$CHECK" auto >>/var/log/my-unraid-vgpu-manager-upgrade.log 2>&1 &
+EMHTTP=/usr/local/emhttp/plugins/my-unraid-vgpu-manager
+nohup "$EMHTTP/include/upgrade-check.sh" auto >>/var/log/my-unraid-vgpu-manager-upgrade.log 2>&1 &
+# A license server running in a local container or VM is only reachable now.
+nohup "$EMHTTP/scripts/rc.vgpu" license_retry >>/var/log/my-unraid-vgpu-manager-boot.log 2>&1 &

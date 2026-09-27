@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Behavioral regressions against an isolated, networkless Unraid simulation."""
 import fcntl
+import hashlib
 import json
 from pathlib import Path
 import select
+import shutil
 import subprocess
 import time
 import unittest
@@ -535,5 +537,138 @@ echo vgpu_json(['first'=>$first,'retry'=>vgpu_driver_updates('refresh')]);"""
         self.assertOK(self.box.rc('restore'))
         self.assertEqual(self.box.read_settings()['nvidia_package'],package)
         self.assertEqual(len(self.box.events('curl')),calls)
+
+    def test_build_numbers_order_numerically_and_never_downgrade(self):
+        # As text, -10 sorted below -2 and -9, so the tenth rebuild was never
+        # chosen and an installed -10 was offered "-9" as an update.
+        self.box.settings(nvidia_installed='true')
+        for build in (2,9,10): self.box.package(build=build)
+        result=self.box.shell(f'source {BASE}/include/common.sh; find_package nvidia {KERNEL} 16')
+        self.assertOK(result); self.assertTrue(result.stdout.strip().endswith(f'{KERNEL}-10.txz'))
+        self.box.installed(f'nvidia-535.309.01-{KERNEL}-10.txz')
+        self.box.package(build=9,remote=True)
+        drivers=self.action_json('check_updates',refresh='true')['updates']['drivers']
+        self.assertEqual(drivers['nvidia']['status'],'current')
+        (self.box.root/'var/log/packages'/f'nvidia-535.309.01-{KERNEL}-10').unlink()
+        self.box.installed(f'nvidia-535.309.01-{KERNEL}-9.txz')
+        newest=self.box.package(build=10,remote=True)
+        drivers=self.action_json('check_updates',refresh='true')['updates']['drivers']
+        self.assertEqual((drivers['nvidia']['status'],drivers['nvidia']['latest']),('available',newest))
+
+    def test_page_opens_when_update_status_cannot_be_read(self):
+        self.box.settings(nvidia_installed='true',intel_installed='true')
+        (self.box.root/f'local/emhttp/plugins/{PLUGIN}/include/update-check.sh').write_text('#!/bin/bash\nexit 1\n')
+        page=self.box.page(); self.assertOK(page)
+        self.assertIn('id="driver-status-panel"',page.stdout)
+        failed=json.loads((Path(__file__).resolve().parents[1]/f'source{BASE}/include/zh_CN.json').read_text())['Update check failed. Try again.']
+        self.assertIn(failed,page.stdout)
+
+    def test_saved_license_token_restores_licensing_offline_after_reboot(self):
+        self.box.settings(nvidia_license_server='dls.local',nvidia_license_port='8443')
+        self.assertOK(self.box.rc('nvidia_license'))
+        saved=self.box.root/f'boot/config/plugins/{PLUGIN}/license/client_configuration_token.tok'
+        self.assertEqual(saved.read_text(),'new-client-configuration-token')
+        # Reboot: RAM contents are gone and the local license server is not up yet.
+        shutil.rmtree(self.box.root/'etc/nvidia')
+        self.box.read_state(); self.box.state['processes']=[]; self.box.state['offline']=True; self.box.write_state()
+        self.assertOK(self.box.rc('nvidia_license'))
+        self.assertEqual((self.box.root/'etc/nvidia/ClientConfigToken/client_configuration_token.tok').read_text(),'new-client-configuration-token')
+        self.assertIn('nvidia-gridd',self.box.read_state()['processes'])
+        # A token saved for another endpoint must not be reused.
+        shutil.rmtree(self.box.root/'etc/nvidia'); self.box.settings(nvidia_license_port='443')
+        self.assertNotEqual(self.box.rc('nvidia_license').returncode,0)
+
+    def test_license_is_retried_after_startup(self):
+        self.box.settings(nvidia_installed='true',nvidia_license_server='dls.local')
+        module=self.box.root/'sys/module/nvidia'; module.mkdir(); (module/'version').write_text('535.309.01')
+        self.box.state['offline']=True; self.box.write_state()
+        self.assertNotEqual(self.box.rc('license_retry','2').returncode,0)
+        self.box.read_state(); self.box.state['offline']=False; self.box.write_state()
+        self.assertOK(self.box.rc('license_retry','2'))
+        self.assertIn('nvidia-gridd',self.box.read_state()['processes'])
+        calls=len(self.box.events('curl'))
+        self.assertOK(self.box.rc('license_retry','2'))
+        self.assertEqual(len(self.box.events('curl')),calls)
+
+    def test_cron_is_published_through_update_cron(self):
+        sbin=self.box.root/'local/sbin'; sbin.mkdir(parents=True)
+        (sbin/'update_cron').write_text('#!/bin/bash\necho called >> /tmp/fixture/update_cron.log\n'); (sbin/'update_cron').chmod(0o755)
+        plugins=self.box.root/'var/log/plugins'; plugins.mkdir(parents=True)
+        (plugins/f'{PLUGIN}.plg').write_text('')
+        (self.box.root/'crontab').write_text(f'0 1 * * * /usr/local/sbin/mover\n* * * * * {BASE}/include/upgrade-check.sh auto\n')
+        self.assertOK(self.box.helper('exec.sh','configure_cron'))
+        cron=(self.box.root/f'boot/config/plugins/{PLUGIN}/{PLUGIN}.cron').read_text()
+        self.assertIn('include/update-check.sh',cron); self.assertIn('include/upgrade-check.sh auto',cron)
+        self.assertEqual((self.box.root/'crontab').read_text(),'0 1 * * * /usr/local/sbin/mover\n')
+        self.assertTrue((self.box.root/'update_cron.log').is_file())
+        self.assertOK(self.box.helper('exec.sh','change_update_check','false'))
+        self.assertNotIn('update-check.sh',(self.box.root/f'boot/config/plugins/{PLUGIN}/{PLUGIN}.cron').read_text())
+
+    def test_intel_gpu_with_sriov_is_managed_when_several_exist(self):
+        other=self.box.root/'sys/bus/pci/devices/0000:00:01.0'; other.mkdir(parents=True)
+        for name,value in {'vendor':'0x8086','device':'0x56a0','class':'0x030000'}.items(): (other/name).write_text(value)
+        self.box.gpu('intel',pci='0000:03:00.0')
+        result=self.box.shell(f'source {BASE}/scripts/rc.vgpu; intel_pf_pci')
+        self.assertOK(result); self.assertEqual(result.stdout.strip(),'0000:03:00.0')
+        self.box.settings(intel_installed='true')
+        page=self.box.page(); self.assertOK(page)
+        self.assertIn('0000:03:00.0',page.stdout); self.assertNotIn('0000:00:01.0',page.stdout)
+
+    def test_unchanged_setting_is_not_rewritten(self):
+        path=self.box.root/f'boot/config/plugins/{PLUGIN}/settings.cfg'
+        before=path.stat()
+        self.assertOK(self.box.shell(f'source {BASE}/include/common.sh; set_setting update_check true'))
+        after=path.stat()
+        self.assertEqual((before.st_ino,before.st_mtime_ns),(after.st_ino,after.st_mtime_ns))
+        self.assertOK(self.box.shell(f'source {BASE}/include/common.sh; set_setting update_check false'))
+        self.assertEqual(self.box.read_settings()['update_check'],'false')
+
+    def test_published_sha256_must_match(self):
+        name=self.box.package()
+        cache=self.box.root/f'boot/config/plugins/{PLUGIN}/packages/6.18.44'
+        (cache/(name+'.sha256')).write_text('0'*64+'  '+name+'\n')
+        lookup=f'source {BASE}/include/common.sh; find_package nvidia {KERNEL} 16'
+        self.assertNotEqual(self.box.shell(lookup).returncode,0)
+        (cache/(name+'.sha256')).write_text(hashlib.sha256((cache/name).read_bytes()).hexdigest()+'  '+name+'\n')
+        self.assertOK(self.box.shell(lookup))
+        remote=self.box.package(build=2,remote=True)
+        (self.box.root/'remote'/(remote+'.sha256')).write_text('f'*64+'\n')
+        self.assertNotEqual(self.box.helper('download.sh','nvidia','16','latest','--refresh').returncode,0)
+        self.assertFalse((cache/remote).exists())
+        (self.box.root/'remote'/(remote+'.sha256')).write_text(hashlib.sha256((self.box.root/'remote'/remote).read_bytes()).hexdigest()+'\n')
+        self.assertOK(self.box.helper('download.sh','nvidia','16','latest','--refresh'))
+        self.assertTrue((cache/remote).is_file()); self.assertTrue((cache/(remote+'.sha256')).is_file())
+
+    def test_failed_series_switch_keeps_series_preference(self):
+        self.box.installed(self.box.package())
+        self.box.package(version='580.178.05',remote=True)
+        self.box.settings(nvidia_installed='true',nvidia_series='16')
+        self.box.state['fail_install']=True; self.box.write_state()
+        self.assertNotEqual(self.box.helper('exec.sh','update_driver','19','latest').returncode,0)
+        self.assertEqual(self.box.read_settings()['nvidia_series'],'16')
+
+    def test_intel_uninstall_reloads_stock_driver(self):
+        package=self.box.package(source='i915'); self.box.installed(package)
+        self.box.gpu('intel'); self.box.settings(intel_installed='true')
+        self.assertOK(self.box.rc('intel_uninstall'))
+        events=self.box.events()
+        removed=max(i for i,e in enumerate(events) if e[0]=='removepkg')
+        self.assertTrue(any(e[0]=='modprobe' and e[1]==['i915'] for e in events[removed:]))
+        self.assertEqual(self.box.read_settings()['intel_installed'],'false')
+
+    def test_minute_check_reuses_kernel_of_unchanged_boot_image_and_trims_log(self):
+        self.box.settings(nvidia_installed='true',kernel_upgrade_check='false')
+        log=self.box.root/f'var/log/{PLUGIN}-upgrade.log'; log.write_bytes(b'x'*(3*1024*1024))
+        state=self.box.root/'var/tmp'/f'{PLUGIN}-upgrade.json'
+        self.assertOK(self.box.helper('upgrade-check.sh','auto'))
+        self.assertLessEqual(log.stat().st_size,1024*1024)
+        (self.box.root/f'local/emhttp/plugins/{PLUGIN}/include/kernel.php').write_text('<?php exit(1);\n')
+        state.unlink()
+        self.assertOK(self.box.helper('upgrade-check.sh','auto'))
+        self.assertEqual(self.load_upgrade()['kernel'],NEXT_KERNEL)
+        # A rewritten boot image is read again, never taken from the cache.
+        time.sleep(0.01); self.box.boot_image(NEXT_KERNEL); state.unlink()
+        self.assertOK(self.box.helper('upgrade-check.sh','auto'))
+        self.assertFalse(state.exists())
 
 if __name__ == '__main__': unittest.main(verbosity=2)

@@ -116,8 +116,10 @@ class Sandbox:
         # Mount extracted tools at the same path, or retain the system PHP
         # configuration after replacing /etc with the isolated fixture.
         extra=[]
-        if php.startswith('/tmp/vgpu-review-tools/'):
-            extra=['--ro-bind','/tmp/vgpu-review-tools','/tmp/vgpu-review-tools']
+        php_dir=str(Path(php).resolve().parent)
+        if php_dir.startswith('/tmp/'):
+            # /tmp is replaced by a tmpfs inside the sandbox.
+            extra=['--ro-bind',php_dir,php_dir]
         elif Path('/etc/php').is_dir():
             extra=['--ro-bind','/etc/php','/etc/php']
         # Unraid uses GNU coreutils. Hosts that default to uutils may provide

@@ -66,10 +66,12 @@ check_driver() {
       # Compare normalized version keys, never `sort -V` over the file names: the
       # i915 version field encodes a date, so the shorter newer number used to
       # lose against the longer older one and no update was ever reported.
+      # The key includes the build counter, so only a strictly newer package
+      # (including a same-version rebuild) counts. A different but older name
+      # must never be offered, or "updating" would downgrade the driver.
       current_key="$(package_version_key "$current")" || current_key=''
       latest_key="$(package_version_key "$latest")" || latest_key=''
-      if [ -n "$latest_key" ] && [ "$latest" != "$current" ] &&
-         [[ "$latest_key" > "$current_key" || "$latest_key" = "$current_key" ]]; then
+      if [ -n "$latest_key" ] && [[ "$latest_key" > "$current_key" ]]; then
         status=available
       fi
     fi

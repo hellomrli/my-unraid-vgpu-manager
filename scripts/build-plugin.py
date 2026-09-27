@@ -44,13 +44,18 @@ def main():
     package=ROOT/'packages'/f'my-unraid-vgpu-manager-{version}.txz'
     data=payload(version)
     checksum=hashlib.md5(data).hexdigest()
+    # Installation only needs the current package; old ones just grow the repo.
+    stale=[p for p in package.parent.glob('my-unraid-vgpu-manager-*.txz') if p!=package]
     if args.check:
         recorded=re.search(r'<!ENTITY md5\s+"([0-9a-f]+)">',text).group(1)
         if not package.is_file() or package.read_bytes()!=data or recorded!=checksum:
             raise SystemExit('Package/source/checksum mismatch. Run python3 scripts/build-plugin.py and commit both outputs.')
+        if stale:
+            raise SystemExit('Stale packages: '+', '.join(sorted(p.name for p in stale))+'. Run python3 scripts/build-plugin.py.')
         print(f'Package matches source and manifest: {package.name} ({checksum})')
     else:
         package.parent.mkdir(exist_ok=True)
+        for old in stale: old.unlink()
         package.write_bytes(data)
         manifest.write_text(re.sub(r'<!ENTITY md5\s+"[0-9a-f]+">',f'<!ENTITY md5       "{checksum}">',text,count=1))
         print(f'Built {package.relative_to(ROOT)} ({len(data)} bytes; MD5 {checksum})')
