@@ -40,13 +40,23 @@ const {chromium} = require(process.env.PLAYWRIGHT_CORE || 'playwright-core');
     const nvidiaStatus=page.locator('#driver-status-panel [data-update-message="nvidia"]');
     assert.match(await nvidiaStatus.innerText(),/当前 535\.309\.01.*可更新至 535\.310\.00/);
     assert.match(await page.locator('#driver-status-panel [data-update-message="i915"]').innerText(),/构建 1.*构建 2/);
+    page.once('dialog', async dialog => { assert.match(dialog.message(), /将停止相关 GPU/); await dialog.accept(); });
     await page.locator('#driver-status-panel [data-update-button="nvidia"]').click();
     let popup=await page.evaluate(() => window.__openBoxCalls.at(-1));
     assert.ok(popup[0].includes('update_driver&arg2=16&arg3=latest'));
+    page.once('dialog', async dialog => { assert.match(dialog.message(), /30 秒/); await dialog.accept(); });
     await page.locator('#driver-status-panel [data-update-button="i915"]').click();
     popup=await page.evaluate(() => window.__openBoxCalls.at(-1));
     assert.ok(popup[0].endsWith('&arg1=update_intel'));
     await page.screenshot({path:path.join(artifacts,'zh-drivers.png'),fullPage:true});
+    await page.locator('[data-tab="tab-i915"]').click();
+    assert.equal(await page.locator('#intel-ccs').inputValue(), 'false');
+    await page.locator('#intel-ccs').selectOption('true');
+    await page.locator('form:has(#intel-ccs) button').click();
+    await page.waitForFunction(() => document.getElementById('vgpu-message')?.textContent.includes('CCS 设置已保存'));
+    assert.match(fs.readFileSync(configFile, 'utf8'), /^intel_xelp_enable_ccs=true$/m);
+    await page.reload(); await waitForUpdates();
+    assert.equal(await page.locator('#intel-ccs').inputValue(), 'true');
 
     // The plugin follows Unraid, even if the old plugin preference disagrees.
     locale('');

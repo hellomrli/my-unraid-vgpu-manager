@@ -91,7 +91,7 @@ if command == 'modinfo':
     driver = args[-1]
     version = state.get('nvidia_disk_version' if driver == 'nvidia' else 'intel_disk_version', '')
     if '-p' in args:
-        finish(output='max_vfs: Maximum VFs')
+        finish(output='max_vfs: Maximum VFs' + ('\nxelp_enable_ccs: Enable CCS' if state.get('ccs_supported') else ''))
     finish(0 if version else 1, version)
 if command in ('modprobe', 'rmmod'):
     removing = '-r' in args or command == 'rmmod'
@@ -130,6 +130,10 @@ if command == 'virsh':
     name = option('--domain', args[1] if len(args) > 1 else '')
     if name not in vms: finish(1, 'domain not found')
     vm = vms[name]
+    if args[0] == 'shutdown':
+        if state.get('fail_shutdown'): finish(1, 'shutdown rejected')
+        vm['state'] = 'shut off'
+        finish()
     if args[0] == 'domstate': finish(output=vm.get('state', 'shut off'))
     if args[0] == 'dumpxml':
         finish(output=vm.get('inactive' if '--inactive' in args else 'active', vm.get('inactive', '<domain><devices/></domain>')))
@@ -144,6 +148,21 @@ if command == 'virsh':
                 address = old.find('source/address')
                 if address is not None and address.get('uuid') == uuid: devices.remove(old)
         vm['inactive'] = ET.tostring(document, encoding='unicode')
+        finish()
+    finish(1)
+if command == 'docker':
+    containers = state.get('containers', {})
+    if args[0] == 'ps':
+        if state.get('fail_docker'): finish(1, 'Docker unavailable')
+        finish(output='\n'.join(k for k, v in containers.items() if v.get('State', {}).get('Running', False)))
+    target = containers.get(args[-1])
+    if target is None: finish(1, 'No such container')
+    if args[0] == 'inspect':
+        if '--format' in args: finish(output='true' if target['State']['Running'] else 'false')
+        finish(output=json.dumps([target]))
+    if args[0] == 'stop':
+        if state.get('fail_docker_stop'): finish(1, 'stop failed')
+        target['State']['Running'] = False
         finish()
     finish(1)
 if command == 'mdevctl':

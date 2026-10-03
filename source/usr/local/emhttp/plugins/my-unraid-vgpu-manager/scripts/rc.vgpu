@@ -606,6 +606,23 @@ nvidia_do_start() {
   wait_types && nvidia_apply_devices
 }
 
+stop_update_workloads() {
+  local stack="$1" pci
+  local -a devices=()
+  if [ "$stack" = nvidia ]; then
+    for pci in /sys/bus/pci/devices/*; do
+      [ "$(cat "$pci/vendor" 2>/dev/null)" = 0x10de ] || continue
+      case "$(cat "$pci/class" 2>/dev/null)" in 0x03*) devices+=("${pci##*/}") ;; esac
+    done
+  else
+    while IFS= read -r pci; do [ -z "$pci" ] || devices+=("$pci"); done < <(intel_pf_pci; intel_vfs_pci)
+    for pci in /sys/bus/pci/drivers/i915/????:??:??.?; do
+      [ ! -e "$pci" ] || devices+=("${pci##*/}")
+    done
+  fi
+  php "$EMHTTP/include/workloads.php" "$stack" "${devices[@]}"
+}
+
 nvidia_do_update() {
   local pkg="${1:-$(pkg_file)}" new
   package_matches "${pkg##*/}" nvidia "$KERNEL_V" && package_ok "$pkg" || { log "ERROR: no verified NVIDIA package for $KERNEL_V"; return 1; }
@@ -615,6 +632,7 @@ nvidia_do_update() {
     nvidia_do_start
     return $?
   fi
+  if [ "${2:-}" = stop-workloads ]; then stop_update_workloads nvidia || return 1; fi
   nvidia_stop_devices || return 1
   daemons_stop
   if ! unload_nvidia_stack; then
@@ -777,19 +795,47 @@ intel_restore_go() {
   sed -i 's/\bmodprobe i915_disabled_by_vgpu_plugin\b/modprobe i915/g' "$go"
 }
 
-intel_load_module() {
-  local max_vfs
-  max_vfs="$(setting intel_vf_number)"
-  [ -n "${max_vfs}" ] || max_vfs="7"
+intel_ccs_supported() {
+  modinfo -p i915 2>/dev/null | grep -q '^xelp_enable_ccs:'
+}
 
-  mkdir -p /boot/config/modprobe.d /etc/modprobe.d
+intel_write_config() {
+  local max_vfs ccs=''
+  max_vfs="$(setting intel_vf_number)"
+  [ -n "$max_vfs" ] || max_vfs=7
+  if intel_ccs_supported; then
+    ccs=' xelp_enable_ccs=0'
+    [ "$(setting intel_xelp_enable_ccs)" != true ] || ccs=' xelp_enable_ccs=1'
+  elif [ "$(setting intel_xelp_enable_ccs)" = true ]; then
+    log "WARNING: CCS setting saved, but this i915 module does not support xelp_enable_ccs. Upgrade the driver first."
+  fi
+  mkdir -p /boot/config/modprobe.d /etc/modprobe.d || return 1
   cat > /boot/config/modprobe.d/my-unraid-vgpu-manager-i915.conf <<EOF
 # Managed by my-unraid-vgpu-manager
 blacklist i915
 blacklist xe
-options i915 enable_guc=3 max_vfs=${max_vfs}
+options i915 enable_guc=3 max_vfs=${max_vfs}${ccs}
 EOF
-  cp /boot/config/modprobe.d/my-unraid-vgpu-manager-i915.conf /etc/modprobe.d/my-unraid-vgpu-manager-i915.conf || return 1
+  cp /boot/config/modprobe.d/my-unraid-vgpu-manager-i915.conf /etc/modprobe.d/my-unraid-vgpu-manager-i915.conf
+}
+
+intel_set_ccs() {
+  case "$1" in true|false) ;; *) log 'ERROR: invalid CCS setting'; return 1 ;; esac
+  set_setting intel_xelp_enable_ccs "$1" || return 1
+  if [ "$(setting intel_installed)" = true ]; then intel_write_config || return 1; fi
+  log 'CCS setting saved. Reboot or reload the supported i915 driver to apply it; running VFs are unchanged.'
+}
+
+intel_load_module() {
+  local max_vfs
+  local -a ccs_args=()
+  max_vfs="$(setting intel_vf_number)"
+  [ -n "${max_vfs}" ] || max_vfs="7"
+  intel_write_config || return 1
+  if intel_ccs_supported; then
+    ccs_args=(xelp_enable_ccs=0)
+    [ "$(setting intel_xelp_enable_ccs)" != true ] || ccs_args=(xelp_enable_ccs=1)
+  fi
 
   # the SR-IOV i915 build depends on the compat shim for intel_drm_shim_* symbols;
   # it MUST be loaded before i915 or modprobe fails with "Unknown symbol".
@@ -814,7 +860,7 @@ EOF
   fi
 
   log "Loading i915 with enable_guc=3 max_vfs=${max_vfs}"
-  modprobe i915 enable_guc=3 max_vfs="${max_vfs}" 2>/dev/null || {
+  modprobe i915 enable_guc=3 max_vfs="${max_vfs}" "${ccs_args[@]}" 2>/dev/null || {
     log "ERROR: modprobe i915 failed - is the i915-sriov package installed and depmod run?"
     return 1
   }
@@ -914,8 +960,9 @@ intel_do_install() {
   local pkg="${1:-$(i915_pkg_file)}"
   package_matches "${pkg##*/}" i915 "$KERNEL_V" && package_ok "$pkg" || { log "ERROR: no verified Intel package for $KERNEL_V"; return 1; }
   if [ "$(installed_package i915)" != "${pkg##*/}" ]; then
-    intel_unload_stack || return 1
-    intel_install_pkg "$pkg" || return 1
+    if [ "${2:-}" = stop-workloads ]; then stop_update_workloads intel || return 1; fi
+    if ! intel_unload_stack; then intel_do_ensure || true; return 1; fi
+    if ! intel_install_pkg "$pkg"; then intel_do_ensure || true; return 1; fi
   fi
   set_setting intel_installed true || return 1
   intel_do_ensure
@@ -1027,7 +1074,9 @@ case "${1:-}" in
   nvidia_install)    nvidia_do_install "${2:-}" ;;
   nvidia_uninstall)  nvidia_do_uninstall ;;
   nvidia_start)      nvidia_do_start ;;
-  nvidia_update)     nvidia_do_update "${2:-}" ;;
+  nvidia_update)     nvidia_do_update "${2:-}" "${3:-}" ;;
+  intel_update)      intel_do_install "${2:-}" stop-workloads ;;
+  intel_set_ccs)     intel_set_ccs "${2:-}" ;;
   nvidia_license)    nvidia_apply_license ;;
   license_retry)     license_retry "${2:-}" ;;
   nvidia_add_device) nvidia_add_device "${2:-}" "${3:-}" "${4:-}" ;;

@@ -35,7 +35,7 @@ try {
         echo vgpu_json(['ok'=>true, 'updates'=>vgpu_driver_updates($mode)]);
         return;
     }
-    if (!in_array($action, ['save_settings','save_upgrade_settings','save_nvidia','save_intel','save_override','add_device','start_device','stop_device','remove_device','attach_vm','detach_vm'], true)) {
+    if (!in_array($action, ['save_settings','save_upgrade_settings','save_nvidia','save_intel','save_intel_ccs','save_override','add_device','start_device','stop_device','remove_device','attach_vm','detach_vm'], true)) {
         throw new InvalidArgumentException('Unknown operation.');
     }
     $lock = fopen('/var/lock/my-unraid-vgpu-manager.lock', 'c');
@@ -72,6 +72,11 @@ try {
             vgpu_set_settings($values);
             if (vgpu_setting('nvidia_installed') === 'true') vgpu_apply(['nvidia_license'], $lock, true);
             $message = vgpu_t('NVIDIA settings saved. Restart NVIDIA services after stopping GPU workloads to apply module or unlock changes.');
+            break;
+        case 'save_intel_ccs':
+            $output = vgpu_apply(['intel_set_ccs', vgpu_choice('xelp_enable_ccs', ['true','false'])], $lock, true);
+            $message = vgpu_t('CCS setting saved. Reboot or reload a supported i915 driver to apply it. Running VFs are unchanged.');
+            if (strpos($output, 'does not support xelp_enable_ccs') !== false) $message .= ' '.vgpu_t('This driver does not support CCS control. Upgrade the driver first.');
             break;
         case 'save_intel':
             $count = vgpu_post('vf_number');

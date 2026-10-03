@@ -88,7 +88,7 @@ update_driver() {
   operation_lock || return 1
   "$EMHTTP/include/download.sh" nvidia "$series" "$want" --refresh || return 1
   pkg="$(find_package nvidia "$KERNEL_V" "$series" "$want")" || return 1
-  "$RC" nvidia_update "$pkg"
+  "$RC" nvidia_update "$pkg" stop-workloads
   save_nvidia_choice "$?" "$pkg" "$series" "$want"
 }
 
@@ -106,7 +106,7 @@ update_intel() {
   operation_lock || return 1
   "$EMHTTP/include/download.sh" i915 latest --refresh || return 1
   pkg="$(find_package i915 "$KERNEL_V")" || return 1
-  "$RC" intel_install "$pkg"
+  "$RC" intel_update "$pkg"
 }
 
 case "${1:-}" in

@@ -226,11 +226,11 @@
 
   const operations = {
     install_nvidia: ['Installing NVIDIA driver'],
-    update_driver: ['Updating NVIDIA driver'],
+    update_driver: ['Updating NVIDIA driver', 'Update this driver? Related GPU VMs and containers will be stopped. VM shutdown timeout aborts the update; Docker may kill containers after 30 seconds. Restart workloads manually afterwards.'],
     uninstall_nvidia: ['Uninstalling NVIDIA driver', 'Uninstall NVIDIA? Stop GPU VMs and containers first.'],
     restart_services: ['Restarting NVIDIA services', 'Stop GPU workloads before restarting NVIDIA services. Continue?'],
     install_intel: ['Installing Intel driver'],
-    update_intel: ['Updating Intel driver'],
+    update_intel: ['Updating Intel driver', 'Update this driver? Related GPU VMs and containers will be stopped. VM shutdown timeout aborts the update; Docker may kill containers after 30 seconds. Restart workloads manually afterwards.'],
     uninstall_intel: ['Uninstalling Intel driver', 'Uninstall Intel i915 SR-IOV? Stop VMs using its VFs first.'],
     prepare_kernel: ['Preparing drivers for the next kernel']
   };

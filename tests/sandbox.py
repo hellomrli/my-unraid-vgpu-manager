@@ -28,7 +28,7 @@ class Sandbox:
         (self.root/'bin/mock').chmod(0o755)
         # /etc is isolated, so Debian alternatives symlinks need a direct target.
         (self.root/'bin/awk').symlink_to(Path(shutil.which('awk')).resolve())
-        for cmd in ['uname','curl','upgradepkg','removepkg','modinfo','modprobe','rmmod','lsmod','pgrep','killall','nvidia-vgpud','nvidia-vgpu-mgr','nvidia-gridd','fuser','lspci','virsh','mdevctl','crontab','logger','notify','depmod','sleep','sync','nvidia-modprobe']:
+        for cmd in ['uname','curl','upgradepkg','removepkg','modinfo','modprobe','rmmod','lsmod','pgrep','killall','nvidia-vgpud','nvidia-vgpu-mgr','nvidia-gridd','fuser','lspci','virsh','docker','mdevctl','crontab','logger','notify','depmod','sleep','sync','nvidia-modprobe']:
             (self.root/'bin'/cmd).symlink_to('mock')
         (self.root/'local/emhttp/plugins/dynamix/scripts/notify').symlink_to('/tmp/fixture/bin/mock')
         # The notify double needs its own argv[0] name.

@@ -2,11 +2,11 @@
 <!DOCTYPE PLUGIN [
   <!ENTITY name      "my-unraid-vgpu-manager">
   <!ENTITY author    "hellomrli">
-  <!ENTITY version   "2026.09.27">
+  <!ENTITY version   "2026.10.03">
   <!ENTITY launch    "Settings/my-unraid-vgpu-manager">
   <!ENTITY gitURL    "https://github.com/&author;/&name;/raw/master">
   <!ENTITY pluginURL "&gitURL;/&name;.plg">
-  <!ENTITY md5       "2e64ce2c4c8ef85869afa3f6071a9b1c">
+  <!ENTITY md5       "545cb1c55545d9077821420ccc7f3b44">
   <!ENTITY plugin    "/boot/config/plugins/&name;">
   <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
   <!ENTITY packages  "/boot/config/plugins/&name;/packages">
@@ -15,6 +15,16 @@
 <PLUGIN  name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" min="7.2.3" support="https://github.com/&author;/&name;">
 
 <CHANGES>
+##2026.10.03
+- FIX: explicit driver updates stop related GPU VMs and Docker containers before
+  unloading modules. Abort on failed shutdown or remaining occupancy; never
+  force power off a VM. Stopped workloads must be restarted manually.
+- ADD: independent Intel Xe_LP CCS0 setting using xelp_enable_ccs, with support
+  detection for older drivers. Apply after a reboot or driver reload without
+  changing running VFs when saving the setting.
+- TEST: add workload shutdown, update ordering, failure handling, CCS settings
+  and browser interaction coverage.
+
 ##2026.09.27
 - FIX: order package builds numerically. Build -10 was sorted below -2, so the
   tenth rebuild of a driver would never be selected. Update checks now offer

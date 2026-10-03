@@ -123,6 +123,12 @@ For NVIDIA, the shortest path is: install a driver on the Drivers tab, set the l
 
 Driver status compares the installed version with the available one and shows both build numbers. Enable the daily check to look for updates when the page opens, or press the check button to query immediately; a check that does not answer within 35 seconds is reported as timed out and the button comes back so you can retry.
 
+## Driver updates and CCS0
+
+After you confirm **Update driver**, the plugin downloads and verifies the package before identifying consumers from live VM mdev/PCI devices and Docker GPU requests, device mappings and mounts. It requests a normal VM shutdown and aborts after roughly two minutes without forcing power off. Containers use `docker stop --time 30` (Docker may kill them after that timeout). Unidentified host processes can still block module removal; the plugin does not kill them or stop the entire Docker/libvirt service. **Restart stopped VMs and containers manually afterwards**, including checking the log after a failed update. Scheduled checks and kernel pre-staging do not stop workloads.
+
+The Intel tab has a separate **CCS0 switch**. Since i915 SR-IOV `2026.09.16`, CCS0 is disabled by default on Xe_LP (TGL / ADL / RPL); enabling `xelp_enable_ccs=1` may help Windows guests. Saving updates the plugin's modprobe configuration, without changing VF counts or stopping VMs. **Reboot the host or successfully reload a supported driver to apply it.** Unsupported older drivers do not receive the unknown parameter and show an upgrade warning. Any manually configured `i915.xelp_enable_ccs` boot option should agree with this setting.
+
 ## Driver series and hardware
 
 | Series | Package version | When to choose it |

@@ -101,6 +101,8 @@ $docker = json_decode((string)@file_get_contents('/etc/docker/daemon.json'), tru
 $docker_gpu = isset($docker['runtimes']['nvidia']);
 $action_url = "/plugins/$vgpu_plugin/include/actions.php";
 $labels = [];
+$update_warning = 'Update this driver? Related GPU VMs and containers will be stopped. VM shutdown timeout aborts the update; Docker may kill containers after 30 seconds. Restart workloads manually afterwards.';
+$labels[$update_warning] = vgpu_t($update_warning);
 foreach (['Profile','Type','Framebuffer','Displays','Max resolution','FRL','Free','No profiles are available on this GPU.','Select a profile first.','Remove this vGPU? Detach it from VMs first.','Stop GPU workloads before restarting NVIDIA services. Continue?','Uninstall NVIDIA? Stop GPU VMs and containers first.','Uninstall Intel i915 SR-IOV? Stop VMs using its VFs first.','Detach this vGPU from {vm}? Cold-start the VM to release it.','Copied.','Copy failed. Select and copy the XML manually.','The request failed. Refresh the page and check the result before retrying.','Enter a full Unraid kernel release, for example 6.18.47-Unraid.','Installing NVIDIA driver','Updating NVIDIA driver','Uninstalling NVIDIA driver','Restarting NVIDIA services','Installing Intel driver','Updating Intel driver','Uninstalling Intel driver','Preparing drivers for the next kernel', 'Checking for driver updates…', 'Could not check driver updates. Try again.', 'Driver update check timed out. Try again.', 'Another driver update check is running. Try again shortly.', 'Update check failed. Try again.', 'The page token expired. Refresh the page and try again.'] as $label) $labels[$label] = vgpu_t($label);
 ?>
 <link rel="stylesheet" href="<?= vgpu_h(vgpu_asset('style.css')) ?>">
@@ -337,6 +339,21 @@ foreach (['Profile','Type','Framebuffer','Displays','Max resolution','FRL','Free
     <p class="vgpu-muted"><?= vgpu_e('The count is applied immediately and saved only on success. Stop VMs using these VFs before changing it. Reapplying the same count keeps existing VFs.') ?></p>
   </div>
   <div class="vgpu-panel">
+    <h3>Xe_LP CCS0</h3>
+    <form class="vgpu-form" method="post" action="<?= $action_url ?>"><?php vgpu_form_fields('save_intel_ccs'); ?>
+      <table class="vgpu-status vgpu-form-table">
+        <tr><td><label for="intel-ccs"><?= vgpu_e('Enable CCS0') ?>:</label></td><td><select id="intel-ccs" name="xelp_enable_ccs">
+          <option value="false" <?= vgpu_setting('intel_xelp_enable_ccs', 'false') !== 'true' ? 'selected' : '' ?>><?= vgpu_e('Disabled') ?></option>
+          <option value="true" <?= vgpu_setting('intel_xelp_enable_ccs', 'false') === 'true' ? 'selected' : '' ?>><?= vgpu_e('Enabled') ?></option>
+        </select></td></tr>
+        <tr><td><?= vgpu_e('Current CCS0 parameter') ?>:</td><td><?= vgpu_h(trim(@file_get_contents('/sys/module/i915/parameters/xelp_enable_ccs') ?: '—')) ?></td></tr>
+        <tr><td></td><td><button type="submit"><?= vgpu_e('Save CCS setting') ?></button></td></tr>
+      </table>
+    </form>
+    <p class="vgpu-muted"><?= vgpu_e('Since 2026.09.16, CCS0 is disabled by default on Xe_LP (TGL / ADL / RPL). Enable it if Windows guests have issues. Requires a supported i915 driver and a reboot or driver reload; saving does not interrupt running VFs.') ?></p>
+    <p class="vgpu-muted"><?= vgpu_e('Remove conflicting i915.xelp_enable_ccs options from the boot entry. The plugin does not modify your boot entry.') ?></p>
+  </div>
+  <div class="vgpu-panel">
     <h3><i class="fa fa-plug" aria-hidden="true"></i> <?= vgpu_e('VF passthrough') ?></h3>
     <p><?= vgpu_e('VFs are bound to vfio-pci for VM passthrough. Never pass through the physical function (PF): {pci}.', ['pci'=>$intel_pf ?: '00:02.0']) ?></p>
     <div class="vgpu-scroll"><table class="vgpu-table"><tr><th>PCI</th><th><?= vgpu_e('Driver') ?></th></tr>
@@ -347,7 +364,7 @@ foreach (['Profile','Type','Framebuffer','Displays','Max resolution','FRL','Free
   <div class="vgpu-panel">
     <h3><i class="fa fa-terminal" aria-hidden="true"></i> <?= vgpu_e('Boot parameters') ?></h3>
     <p><?= vgpu_e('Enable IOMMU in firmware and add these parameters to the active Unraid boot entry. The plugin manages its own i915 modprobe configuration.') ?></p>
-    <pre class="vgpu-xml">intel_iommu=on i915.enable_guc=3 i915.max_vfs=<?= vgpu_h($vfnum) ?> module_blacklist=xe</pre>
+    <pre class="vgpu-xml">intel_iommu=on i915.enable_guc=3 i915.max_vfs=<?= vgpu_h($vfnum) ?> module_blacklist=xe<?= vgpu_setting('intel_xelp_enable_ccs', 'false') === 'true' ? ' i915.xelp_enable_ccs=1' : '' ?></pre>
   </div>
 <?php endif; ?>
 </div>

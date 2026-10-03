@@ -1,4 +1,13 @@
 {
+  "Update this driver? Related GPU VMs and containers will be stopped. VM shutdown timeout aborts the update; Docker may kill containers after 30 seconds. Restart workloads manually afterwards.": "更新此驱动？将停止相关 GPU 虚拟机和容器。虚拟机关机超时则中止更新；Docker 可能在 30 秒后强制停止容器。完成后请手动启动这些工作负载。",
+  "Enable CCS0": "启用 CCS0",
+  "Disabled": "已禁用",
+  "Current CCS0 parameter": "当前 CCS0 参数",
+  "Save CCS setting": "保存 CCS 设置",
+  "Since 2026.09.16, CCS0 is disabled by default on Xe_LP (TGL / ADL / RPL). Enable it if Windows guests have issues. Requires a supported i915 driver and a reboot or driver reload; saving does not interrupt running VFs.": "从 2026.09.16 起，Xe_LP（TGL / ADL / RPL）默认关闭 CCS0。Windows 虚拟机遇到问题时可尝试开启。需要驱动支持，重启宿主机或重新加载驱动后生效；保存不会中断运行中的 VF。",
+  "Remove conflicting i915.xelp_enable_ccs options from the boot entry. The plugin does not modify your boot entry.": "请移除启动项中冲突的 i915.xelp_enable_ccs 参数。插件不会修改启动项。",
+  "CCS setting saved. Reboot or reload a supported i915 driver to apply it. Running VFs are unchanged.": "CCS 设置已保存，重启宿主机或重新加载支持该参数的 i915 驱动后生效。运行中的 VF 未改变。",
+  "This driver does not support CCS control. Upgrade the driver first.": "当前驱动不支持 CCS 控制，请先升级驱动。",
   "Unraid vGPU Manager": "Unraid vGPU 管理器",
   "Apply": "应用",
   "GPU settings": "GPU 设置",
