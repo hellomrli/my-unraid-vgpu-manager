@@ -165,12 +165,12 @@ class UpdateWorkloadsAndCCS(unittest.TestCase):
             self.assertFalse(json.loads(self.box.action('save_intel_ccs', **fields).stdout)['ok'])
         self.assertNotIn('intel_xelp_enable_ccs', self.box.read_settings())
 
-    def test_ccs_load_default_off_and_enabled(self):
+    def test_ccs_load_default_on_and_disabled(self):
         self.box.state['ccs_supported'] = True; self.box.write_state()
-        for enabled in [False, True]:
-            self.box.settings(intel_xelp_enable_ccs='true' if enabled else 'false')
-            self.assertOK(self.box.rc('intel_load'))
-            if not enabled:
-                self.assertOK(self.box.shell('rm -rf /sys/module/i915'))
+        # no intel_xelp_enable_ccs setting at all -> CCS0 defaults to ON
+        self.assertOK(self.box.rc('intel_load'))
+        self.box.shell('rm -rf /sys/module/i915')
+        self.box.settings(intel_xelp_enable_ccs='false')
+        self.assertOK(self.box.rc('intel_load'))
         calls = [e[1] for e in self.box.events('modprobe') if e[1][0] == 'i915']
-        self.assertIn('xelp_enable_ccs=0', calls[0]); self.assertIn('xelp_enable_ccs=1', calls[1])
+        self.assertIn('xelp_enable_ccs=1', calls[0]); self.assertIn('xelp_enable_ccs=0', calls[1])

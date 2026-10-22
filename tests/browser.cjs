@@ -50,13 +50,14 @@ const {chromium} = require(process.env.PLAYWRIGHT_CORE || 'playwright-core');
     assert.ok(popup[0].endsWith('&arg1=update_intel'));
     await page.screenshot({path:path.join(artifacts,'zh-drivers.png'),fullPage:true});
     await page.locator('[data-tab="tab-i915"]').click();
-    assert.equal(await page.locator('#intel-ccs').inputValue(), 'false');
-    await page.locator('#intel-ccs').selectOption('true');
+    // CCS0 is on unless it was turned off, so a fresh install shows "Enabled"
+    assert.equal(await page.locator('#intel-ccs').inputValue(), 'true');
+    await page.locator('#intel-ccs').selectOption('false');
     await page.locator('form:has(#intel-ccs) button').click();
     await page.waitForFunction(() => document.getElementById('vgpu-message')?.textContent.includes('CCS 设置已保存'));
-    assert.match(fs.readFileSync(configFile, 'utf8'), /^intel_xelp_enable_ccs=true$/m);
+    assert.match(fs.readFileSync(configFile, 'utf8'), /^intel_xelp_enable_ccs=false$/m);
     await page.reload(); await waitForUpdates();
-    assert.equal(await page.locator('#intel-ccs').inputValue(), 'true');
+    assert.equal(await page.locator('#intel-ccs').inputValue(), 'false');
 
     // The plugin follows Unraid, even if the old plugin preference disagrees.
     locale('');

@@ -800,13 +800,15 @@ intel_ccs_supported() {
 }
 
 intel_write_config() {
-  local max_vfs ccs=''
+  local max_vfs ccs='' ccs_setting
   max_vfs="$(setting intel_vf_number)"
   [ -n "$max_vfs" ] || max_vfs=7
+  # CCS0 is ON unless it was explicitly turned off: the i915 SR-IOV driver
+  # defaults to off since 2026.09.16, the plugin defaults to on.
+  ccs_setting="$(setting intel_xelp_enable_ccs)"
   if intel_ccs_supported; then
-    ccs=' xelp_enable_ccs=0'
-    [ "$(setting intel_xelp_enable_ccs)" != true ] || ccs=' xelp_enable_ccs=1'
-  elif [ "$(setting intel_xelp_enable_ccs)" = true ]; then
+    if [ "$ccs_setting" = false ]; then ccs=' xelp_enable_ccs=0'; else ccs=' xelp_enable_ccs=1'; fi
+  elif [ "$ccs_setting" = true ]; then
     log "WARNING: CCS setting saved, but this i915 module does not support xelp_enable_ccs. Upgrade the driver first."
   fi
   mkdir -p /boot/config/modprobe.d /etc/modprobe.d || return 1
@@ -833,8 +835,11 @@ intel_load_module() {
   [ -n "${max_vfs}" ] || max_vfs="7"
   intel_write_config || return 1
   if intel_ccs_supported; then
-    ccs_args=(xelp_enable_ccs=0)
-    [ "$(setting intel_xelp_enable_ccs)" != true ] || ccs_args=(xelp_enable_ccs=1)
+    if [ "$(setting intel_xelp_enable_ccs)" = false ]; then
+      ccs_args=(xelp_enable_ccs=0)
+    else
+      ccs_args=(xelp_enable_ccs=1)
+    fi
   fi
 
   # the SR-IOV i915 build depends on the compat shim for intel_drm_shim_* symbols;
