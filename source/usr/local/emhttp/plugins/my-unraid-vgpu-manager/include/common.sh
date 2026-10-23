@@ -100,7 +100,7 @@ sort_by_version() {
   local item base key
   while IFS= read -r item; do
     [ -n "$item" ] || continue
-    base="${item##*/}"
+    base="${item%%$'\t'*}"; base="${base##*/}"
     key="$(package_version_key "$base")" || key=''
     printf '%s\t%s\n' "$key" "$item"
   done | LC_ALL=C sort -t $'\t' -k1,1 -k2,2 -u | cut -f2-
@@ -179,6 +179,101 @@ installed_package() {
   done | sort_by_version | tail -1
 }
 
+check_conflicting_plugins() {
+  local source="$1" file name
+  for file in /var/log/plugins/*.plg; do
+    [ -f "$file" ] || continue
+    name="${file##*/}"; name="${name,,}"; name="${name//_/-}"
+    case "$source:$name" in
+      nvidia:nvidia-driver.plg|nvidia:nvidia-driver-*.plg|\
+      i915:i915-sriov*.plg|i915:intel-sriov*.plg|i915:unraid-i915-sriov*.plg|\
+      nvidia:vgpu-driver.plg|i915:vgpu-driver.plg)
+        bilingual "ERROR: conflicting plugin ${file##*/}. Uninstall it and reboot before managing this driver here." \
+          "错误：检测到冲突插件 ${file##*/}，请先卸载该插件并重启，再使用本插件管理此驱动。" >&2
+        return 1 ;;
+    esac
+  done
+}
+
+record_running_kernel() (
+  local previous
+  valid_kernel "$KERNEL_V" || return 1
+  mkdir -p "$PLGCFG" || return 1
+  exec 4>"${PLGCFG}/.kernel-history.lock"
+  flock -x 4 || return 1
+  previous="$(setting current_kernel)"
+  if [ "$(setting prepared_kernel)" = "$KERNEL_V" ]; then set_setting prepared_kernel '' || return 1; fi
+  [ "$previous" != "$KERNEL_V" ] || return 0
+  if valid_kernel "$previous"; then set_setting last_kernel "$previous" || return 1; fi
+  set_setting current_kernel "$KERNEL_V"
+)
+
+package_kernel() {
+  local name="${1##*/}" rest
+  case "$name" in
+    nvidia-*) rest="${name#nvidia-}" ;;
+    i915-sriov-*) rest="${name#i915-sriov-}" ;;
+    *) return 1 ;;
+  esac
+  rest="${rest#*-}"; rest="${rest%-*}"
+  valid_kernel "$rest" || return 1
+  printf '%s\n' "$rest"
+}
+
+# Downloads/installers hold a shared cache lock; never prune a package while
+# pkgtools is reading it or unlink a lock belonging to an active download.
+prune_cache() (
+  local target="${1:-$KERNEL_V}" protected="${2##*/}" boot previous dir file kernel group source name key
+  local installed_nv installed_intel pinned selected selected_intel
+  local -A keep=() newest=() pinned_newest=()
+  mkdir -p "$PLGCFG" || return 1
+  exec 5>"${PLGCFG}/.cache.lock"
+  flock -xn 5 || return 0
+  boot="$(php "$EMHTTP/include/kernel.php" 2>/dev/null)" || boot=''
+  previous="$(php "$EMHTTP/include/kernel.php" /boot/previous/bzimage 2>/dev/null)" || previous=''
+  for kernel in "$KERNEL_V" "$target" "$boot" "$previous" "$(setting last_kernel)" "$(setting prepared_kernel)"; do
+    if valid_kernel "$kernel"; then keep["$kernel"]=1; fi
+  done
+  installed_nv="$(installed_package nvidia)"; installed_intel="$(installed_package i915)"
+  pinned="$(setting driver_version)"; selected="$(setting nvidia_package)"; selected_intel="$(setting intel_package)"
+  for dir in "$PLGCFG/packages/"*; do
+    [ -d "$dir" ] && [ ! -L "$dir" ] || continue
+    [[ "${dir##*/}" =~ ^[0-9]+([.][0-9]+){1,2}$ ]] || continue
+    while IFS= read -r file; do
+      [ -f "$file" ] && [ ! -L "$file" ] || continue
+      name="${file##*/}"
+      kernel="$(package_kernel "$name")" || continue
+      source=i915; group=i915
+      if [[ "$name" == nvidia-* ]]; then
+        source=nvidia; group="${name#nvidia-}"; group="nvidia-${group%%.*}"
+      fi
+      package_matches "$name" "$source" "$kernel" || continue
+      # If the boot image cannot be read, do not guess which kernel is staged.
+      if [ -n "$boot" ] && [ -z "${keep[$kernel]:-}" ]; then
+        rm -f -- "$file" "$file.md5" "$file.sha256"
+        continue
+      fi
+      key="$kernel/$group"
+      if [ -z "${newest[$key]:-}" ] && package_ok "$file"; then newest["$key"]="$name"; fi
+      [ -n "${newest[$key]:-}" ] || continue
+      if [ "$source" = nvidia ] && [ -n "$pinned" ] && [ "$pinned" != latest ] &&
+         package_matches "$name" nvidia "$kernel" '' "$pinned"; then
+        if [ -z "${pinned_newest[$key]:-}" ] && package_ok "$file"; then pinned_newest["$key"]="$name"; fi
+        [ "$name" != "${pinned_newest[$key]:-}" ] || continue
+      fi
+      case "$name" in
+        "${newest[$key]}"|"$protected"|"$installed_nv"|"$installed_intel"|"$selected"|"$selected_intel") continue ;;
+      esac
+      rm -f -- "$file" "$file.md5" "$file.sha256"
+    done < <(printf '%s\n' "$dir/"*.txz | sort_by_version | tac)
+    # Only remove known lock files from otherwise empty, obsolete directories.
+    if ! compgen -G "$dir/*.txz" >/dev/null && [ -n "$boot" ]; then
+      rm -f -- "$dir"/.download-nvidia-{16,19}.lock "$dir/.download-i915-.lock"
+      rmdir -- "$dir" 2>/dev/null || true
+    fi
+  done
+)
+
 nvidia_gpu_ids() {
   local dev
   for dev in /sys/bus/pci/devices/*; do
@@ -220,14 +315,31 @@ nvidia_active_series() {
 }
 
 release_assets() {
-  local source="$1" kernel="$2" series="${3:-}" want="${4:-latest}" max_time="${5:-25}" repo data name
+  local source="$1" kernel="$2" series="${3:-}" want="${4:-latest}" max_time="${5:-25}" format="${6:-names}" repo data name headers digest
   valid_kernel "$kernel" && valid_version "$want" || return 1
   case "$source" in nvidia) repo="$NVIDIA_REPO" ;; i915) repo="$I915_REPO" ;; *) return 1 ;; esac
-  data="$(curl -fsSL --connect-timeout 8 --max-time "$max_time" \
-    "https://api.github.com/repos/${repo}/releases/tags/${kernel}")" || return 1
+  headers="$(mktemp)" || return 1
+  if ! data="$(curl -fsSL --dump-header "$headers" --connect-timeout 8 --max-time "$max_time" \
+      "https://api.github.com/repos/${repo}/releases/tags/${kernel}")"; then
+    if grep -Eqi '^x-ratelimit-remaining:[[:space:]]*0[[:space:]]*$' "$headers"; then
+      rm -f "$headers"
+      bilingual 'ERROR: GitHub API rate limit reached. Wait for the limit to reset before retrying.' \
+        '错误：GitHub API 请求额度已用尽，请等待额度重置后重试。' >&2
+      return 2
+    fi
+    rm -f "$headers"; return 1
+  fi
+  rm -f "$headers"
   jq -e '.assets | type == "array"' <<< "$data" >/dev/null 2>&1 || return 1
   while IFS= read -r name; do
-    if package_matches "$name" "$source" "$kernel" "$series" "$want"; then printf '%s\n' "$name"; fi
+    package_matches "$name" "$source" "$kernel" "$series" "$want" || continue
+    if [ "$format" = metadata ]; then
+      digest="$(jq -r --arg name "$name" '.assets[] | select(.name == $name) |
+        if .digest == null then "" elif (.digest | type) == "string" then
+          if (.digest | test("^sha256:[0-9a-fA-F]{64}$")) then .digest else "invalid" end
+        else "invalid" end' <<< "$data")"
+      printf '%s\t%s\n' "$name" "$digest"
+    else printf '%s\n' "$name"; fi
   done < <(jq -r '.assets[]?.name // empty' <<< "$data") | sort_by_version
 }
 

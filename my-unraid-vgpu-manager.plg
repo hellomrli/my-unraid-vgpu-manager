@@ -2,11 +2,12 @@
 <!DOCTYPE PLUGIN [
   <!ENTITY name      "my-unraid-vgpu-manager">
   <!ENTITY author    "hellomrli">
-  <!ENTITY version   "2026.10.22">
+  <!ENTITY version   "2026.10.23">
   <!ENTITY launch    "Settings/my-unraid-vgpu-manager">
   <!ENTITY gitURL    "https://github.com/&author;/&name;/raw/master">
   <!ENTITY pluginURL "&gitURL;/&name;.plg">
-  <!ENTITY md5       "fbafe00304955157e92d26985e7f74ba">
+  <!ENTITY md5       "731c23c4a811fd629419dadd2eefa3e2">
+  <!ENTITY sha256    "ddd2e331684dc303cf501c4a452983ff4fd99584a1052c2de077699c434a6e50">
   <!ENTITY plugin    "/boot/config/plugins/&name;">
   <!ENTITY emhttp    "/usr/local/emhttp/plugins/&name;">
   <!ENTITY packages  "/boot/config/plugins/&name;/packages">
@@ -15,6 +16,22 @@
 <PLUGIN  name="&name;" author="&author;" version="&version;" launch="&launch;" pluginURL="&pluginURL;" min="7.2.3" support="https://github.com/&author;/&name;">
 
 <CHANGES>
+##2026.10.23
+- FIX: keep i915 module options under plugin control and warn about conflicting
+  boot options. Exclude only the managed Intel device ID from xe probing.
+- FIX: stage the first Intel install for reboot when the stock driver is busy,
+  without detaching the console or bypassing busy SR-IOV update checks.
+- FIX: bound driver caches while preserving running, staged and rollback
+  kernels, installed drivers and pinned versions. Remove old plugin archives.
+- FIX: use Slackware-compatible plugin package names and migrate exact legacy
+  records without removing unrelated my-unraid packages.
+- ADD: verify GitHub asset SHA-256 digests and the plugin payload SHA-256;
+  report GitHub API rate limits and reject conflicting driver plugins.
+- FIX: detach daemon standard streams, defer network licensing until array
+  startup, clean removed NVIDIA runtime settings and reload stock Intel drivers.
+- CHANGE: run the OS-upgrade fallback every five minutes; retain the immediate
+  post-update hook. Add lifecycle, cache, integrity and packaging regressions.
+
 ##2026.10.22
 - CHANGE: Xe_LP CCS0 is now enabled by default (xelp_enable_ccs=1). The i915
   SR-IOV driver defaults to off since 2026.09.16; the Intel tab switch turns it
@@ -243,9 +260,32 @@
 
 </CHANGES>
 
-<FILE Name="/boot/config/plugins/&name;/&name;-&version;.txz" Run="upgradepkg --install-new">
-<URL>&gitURL;/packages/&name;-&version;.txz</URL>
+<FILE Name="/boot/config/plugins/&name;/&name;-&version;-x86_64-1.txz">
+<URL>&gitURL;/packages/&name;-&version;-x86_64-1.txz</URL>
 <MD5>&md5;</MD5>
+<SHA256>&sha256;</SHA256>
+</FILE>
+
+<FILE Run="/bin/bash">
+<INLINE>
+#!/bin/bash
+# Match full legacy records, not pkgtools' ambiguous inferred name my-unraid.
+for db in /var/log/packages /var/lib/pkgtools/packages; do
+  for record in "$db"/my-unraid-vgpu-manager-*; do
+    [ -f "$record" ] || continue
+    name="${record##*/}"
+    if [[ "$name" =~ ^my-unraid-vgpu-manager-[0-9]{4}\.[0-9]{2}\.[0-9]{2}[a-z]?$ ]]; then
+      removepkg "$name" || exit 1
+    fi
+  done
+done
+/sbin/upgradepkg --install-new --reinstall "/boot/config/plugins/&name;/&name;-&version;-x86_64-1.txz" || exit 1
+# Only prune after the new payload has been installed successfully.
+for archive in /boot/config/plugins/&name;/&name;-*.txz; do
+  [ -f "$archive" ] || continue
+  [ "$archive" = "/boot/config/plugins/&name;/&name;-&version;-x86_64-1.txz" ] || rm -f -- "$archive"
+done
+</INLINE>
 </FILE>
 
 <FILE Name="&emhttp;/README.md">
@@ -288,6 +328,7 @@ for package in "$PLGCFG/packages/"*.txz; do
     mkdir -p "$dir"
     mv -n -- "$package" "$dir/"
     [ ! -f "$package.md5" ] || mv -n -- "$package.md5" "$dir/"
+    [ ! -f "$package.sha256" ] || mv -n -- "$package.sha256" "$dir/"
   fi
 done
 "$EMHTTP/include/exec.sh" configure_cron || exit 1
@@ -314,11 +355,11 @@ crontab -l 2&gt;/dev/null | grep -Fv '/usr/local/emhttp/plugins/my-unraid-vgpu-m
 # A running VM may still hold a device; never force-stop it during plugin removal.
 /bin/bash /usr/local/emhttp/plugins/my-unraid-vgpu-manager/scripts/rc.vgpu stop || true
 rm -f /usr/local/emhttp/plugins/dynamix.plugin.manager/post-hooks/my-unraid-vgpu-manager
-# The plugin manager rebuilds the crontab from .cron files after removal.
 rm -f /boot/config/plugins/my-unraid-vgpu-manager/my-unraid-vgpu-manager.cron
+[ ! -x /usr/local/sbin/update_cron ] || /usr/local/sbin/update_cron
 rm -f /boot/config/modprobe.d/my-unraid-vgpu-manager-i915.conf /etc/modprobe.d/my-unraid-vgpu-manager-i915.conf
 rm -f /var/tmp/my-unraid-vgpu-manager-upgrade.json /var/tmp/my-unraid-vgpu-manager-updates.json /var/tmp/my-unraid-vgpu-manager-update-*
-removepkg &name;-&version;
+removepkg &name;-&version;-x86_64-1
 rm -rf /usr/local/emhttp/plugins/&name;
 echo "Plugin removed. Reboot to unload drivers. Settings and driver caches remain on the flash drive."
 </INLINE>

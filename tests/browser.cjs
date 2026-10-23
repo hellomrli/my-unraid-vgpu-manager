@@ -50,6 +50,14 @@ const {chromium} = require(process.env.PLAYWRIGHT_CORE || 'playwright-core');
     assert.ok(popup[0].endsWith('&arg1=update_intel'));
     await page.screenshot({path:path.join(artifacts,'zh-drivers.png'),fullPage:true});
     await page.locator('[data-tab="tab-i915"]').click();
+    assert.equal(await page.locator('#intel-boot-parameters').innerText(), 'intel_iommu=on iommu=pt');
+    const cmdlineFile=path.join(fixture,'cmdline');
+    fs.writeFileSync(cmdlineFile,'intel_iommu=on i915.max_vfs=3 module_blacklist=xe\n');
+    await page.reload(); await waitForUpdates();
+    assert.match(await page.locator('#intel-boot-conflicts').innerText(), /i915\.max_vfs=3.*module_blacklist=xe/);
+    fs.writeFileSync(cmdlineFile,'intel_iommu=on iommu=pt\n');
+    await page.reload(); await waitForUpdates();
+    assert.equal(await page.locator('#intel-boot-conflicts').count(), 0);
     // CCS0 is on unless it was turned off, so a fresh install shows "Enabled"
     assert.equal(await page.locator('#intel-ccs').inputValue(), 'true');
     await page.locator('#intel-ccs').selectOption('false');

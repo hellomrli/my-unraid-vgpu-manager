@@ -124,7 +124,8 @@ class Regressions(unittest.TestCase):
         self.assertEqual(self.box.read_settings()['nvidia_package'],new)
         self.assertTrue(self.box.events('curl'))
         self.assertEqual(len(self.box.events('upgradepkg')),1)
-        for name,kernel in [(old,KERNEL),(other,KERNEL),(upcoming,NEXT_KERNEL)]:
+        self.assertFalse((self.box.root/f'boot/config/plugins/{PLUGIN}/packages/6.18.44'/old).exists())
+        for name,kernel in [(new,KERNEL),(other,KERNEL),(upcoming,NEXT_KERNEL)]:
             self.assertTrue((self.box.root/f'boot/config/plugins/{PLUGIN}/packages/{kernel.split("-")[0]}'/name).is_file())
 
     def test_update_network_failure_is_not_silently_old_package_success(self):
@@ -599,6 +600,7 @@ echo vgpu_json(['first'=>$first,'retry'=>vgpu_driver_updates('refresh')]);"""
         self.assertOK(self.box.helper('exec.sh','configure_cron'))
         cron=(self.box.root/f'boot/config/plugins/{PLUGIN}/{PLUGIN}.cron').read_text()
         self.assertIn('include/update-check.sh',cron); self.assertIn('include/upgrade-check.sh auto',cron)
+        self.assertIn('*/5 * * * * ',cron)
         self.assertEqual((self.box.root/'crontab').read_text(),'0 1 * * * /usr/local/sbin/mover\n')
         self.assertTrue((self.box.root/'update_cron.log').is_file())
         self.assertOK(self.box.helper('exec.sh','change_update_check','false'))

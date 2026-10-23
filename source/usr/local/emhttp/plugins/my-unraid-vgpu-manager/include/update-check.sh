@@ -35,7 +35,7 @@ fi
 if [ "$MODE" = check ]; then
   LAST="$(jq -r '.checked_at // 0' <<< "$CACHE")"; NOW="$(date +%s)"
   INTERVAL=86400
-  if jq -e '.drivers[] | select(.status == "error")' <<< "$CACHE" >/dev/null; then INTERVAL=300; fi
+  if jq -e '.drivers[] | select(.status == "error" or .status == "rate_limited")' <<< "$CACHE" >/dev/null; then INTERVAL=300; fi
   if [[ "$LAST" =~ ^[0-9]+$ ]] && [ "$NOW" -ge "$LAST" ] && [ "$((NOW - LAST))" -lt "$INTERVAL" ]; then
     printf '%s\n' "$CACHE"; exit 0
   fi
@@ -75,6 +75,8 @@ check_driver() {
         status=available
       fi
     fi
+  elif [ "$?" = 2 ]; then
+    status=rate_limited
   fi
   if [ "$status" = available ] && [ "$MODE" = auto ]; then
     if [ "$(cat "$marker" 2>/dev/null)" != "$latest|$current" ]; then
@@ -92,4 +94,4 @@ NEXT="$(jq -cn --argjson base "$BASE" \
 TMP="$(mktemp "${STATE}.XXXXXX")" || exit 1
 printf '%s\n' "$NEXT" > "$TMP" && chmod 0644 "$TMP" && mv -f "$TMP" "$STATE" || { rm -f "$TMP"; exit 1; }
 if [ "$MODE" != auto ]; then printf '%s\n' "$NEXT"
-else ! jq -e '.drivers[] | select(.status == "error")' <<< "$NEXT" >/dev/null; fi
+else ! jq -e '.drivers[] | select(.status == "error" or .status == "rate_limited")' <<< "$NEXT" >/dev/null; fi

@@ -42,6 +42,7 @@ class Sandbox:
         self.settings(nvidia_installed='false', intel_installed='false', nvidia_series='16', driver_version='latest', update_check='true', kernel_upgrade_check='true', ui_language='zh_CN', intel_vf_number='7')
         self.locale('zh_CN')
         self.boot_image(NEXT_KERNEL)
+        (self.root/'cmdline').write_text('BOOT_IMAGE=/bzimage initrd=/bzroot\n')
     def close(self): self.temp.cleanup()
     def write_state(self): (self.root/'state.json').write_text(json.dumps(self.state))
     def read_state(self): self.state = json.loads((self.root/'state.json').read_text()); return self.state
@@ -134,7 +135,7 @@ class Sandbox:
             '--bind',str(self.root/'boot'),'/boot','--bind',str(self.root/'sys'),'/sys',
             '--bind',str(self.root/'var'),'/var','--bind',str(self.root/'etc'),'/etc',*extra,
             '--bind',str(self.root/'local'),'/usr/local','--bind',str(self.root/'bin'),'/usr/sbin',
-            '--dev','/dev','--proc','/proc','--chdir','/tmp/fixture',
+            '--dev','/dev','--proc','/proc','--ro-bind',str(self.root/'cmdline'),'/proc/cmdline','--chdir','/tmp/fixture',
             '--setenv','PATH','/tmp/fixture/bin:'+str(Path(php).parent)+':/usr/bin:/bin',
             '--setenv','LC_ALL','C',*command]
     def run(self, *command, check=False, timeout=35):

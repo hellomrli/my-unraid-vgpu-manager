@@ -72,6 +72,15 @@ function vgpu_json($value) {
     return json_encode($value, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
 }
 function vgpu_read($file) { return trim((string)@file_get_contents($file)); }
+function vgpu_intel_boot_conflicts($cmdline = null) {
+    $conflicts = [];
+    foreach (preg_split('/\s+/', $cmdline ?? vgpu_read('/proc/cmdline')) as $option) {
+        if (preg_match('/^i915\.(?:max_vfs|enable_guc|xelp_enable_ccs)=/', $option) ||
+            (preg_match('/^(?:module_blacklist|modprobe\.blacklist)=(.*)$/', $option, $match) &&
+             in_array('xe', explode(',', $match[1]), true))) $conflicts[] = $option;
+    }
+    return $conflicts;
+}
 function vgpu_uuid_valid($uuid) {
     return preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iD', $uuid) === 1;
 }
@@ -110,7 +119,8 @@ function vgpu_driver_updates($mode = 'status') {
     foreach ($state['drivers'] as &$driver) {
         $labels = ['disabled'=>'Not enabled', 'unchecked'=>'Not checked', 'current'=>'No newer driver available',
             'missing'=>'Not installed for this kernel', 'pinned'=>'A fixed driver version is selected',
-            'error'=>'Update check failed. Try again.'];
+            'error'=>'Update check failed. Try again.',
+            'rate_limited'=>'GitHub API rate limit reached. Wait for the limit to reset before retrying.'];
         $driver['message'] = vgpu_t($labels[$driver['status']] ?? 'Not checked');
         if ($driver['status'] === 'available') {
             $driver['message'] = vgpu_t('Update available: {current} → {latest}', [

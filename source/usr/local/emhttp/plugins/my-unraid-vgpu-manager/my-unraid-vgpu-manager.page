@@ -317,9 +317,15 @@ foreach (['Profile','Type','Framebuffer','Displays','Max resolution','FRL','Free
 </div>
 
 <div id="tab-i915" class="vgpu-tab-content" role="tabpanel" aria-labelledby="vgpu-tab-i915">
+<?php $boot_conflicts = vgpu_intel_boot_conflicts(); if ($boot_conflicts): ?>
+  <div class="vgpu-banner warn" id="intel-boot-conflicts"><?= vgpu_e('Conflicting boot options detected: {options}. Remove the managed i915 options and remove xe from global blacklists in the active boot entry, then reboot. The plugin does not edit boot entries.', ['options'=>implode(' ', $boot_conflicts)]) ?></div>
+<?php endif; ?>
 <?php if (!$intel_inst): ?>
   <div class="vgpu-panel"><div class="vgpu-banner warn"><i class="fa fa-info-circle" aria-hidden="true"></i> <?= vgpu_e('Install the Intel driver from the Drivers tab first.') ?></div></div>
 <?php else: ?>
+  <?php if (vgpu_setting('intel_pending_reboot') === 'true'): ?>
+  <div class="vgpu-banner warn" id="intel-reboot-required"><?= vgpu_e('Intel SR-IOV is installed for the next boot. Reboot to replace the busy stock driver and activate VFs.') ?></div>
+  <?php endif; ?>
   <div class="vgpu-panel">
     <h3><i class="fa fa-info-circle" aria-hidden="true"></i> <?= vgpu_e('Intel SR-IOV status') ?></h3>
     <table class="vgpu-status">
@@ -363,8 +369,8 @@ foreach (['Profile','Type','Framebuffer','Displays','Max resolution','FRL','Free
   </div>
   <div class="vgpu-panel">
     <h3><i class="fa fa-terminal" aria-hidden="true"></i> <?= vgpu_e('Boot parameters') ?></h3>
-    <p><?= vgpu_e('Enable IOMMU in firmware and add these parameters to the active Unraid boot entry. The plugin manages its own i915 modprobe configuration.') ?></p>
-    <pre class="vgpu-xml">intel_iommu=on i915.enable_guc=3 i915.max_vfs=<?= vgpu_h($vfnum) ?> module_blacklist=xe<?= vgpu_setting('intel_xelp_enable_ccs', 'true') !== 'false' ? ' i915.xelp_enable_ccs=1' : '' ?></pre>
+    <p><?= vgpu_e('Enable IOMMU in firmware and add only these IOMMU parameters to the active Unraid boot entry. The plugin manages i915.enable_guc, i915.max_vfs and i915.xelp_enable_ccs; do not add them to the boot entry or globally blacklist xe.') ?></p>
+    <pre class="vgpu-xml" id="intel-boot-parameters">intel_iommu=on iommu=pt</pre>
   </div>
 <?php endif; ?>
 </div>

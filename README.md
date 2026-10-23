@@ -109,6 +109,8 @@ https://github.com/hellomrli/my-unraid-vgpu-manager/raw/master/my-unraid-vgpu-ma
 
 Updating and removing the plugin use the same Unraid plugin manager. Removal deletes the interface, the update hooks and the scheduled checks, and calls `rc.vgpu stop` without force-stopping a running VM; your settings and the driver caches stay on the flash drive, and a reboot unloads the drivers.
 
+Before installing a driver, uninstall other plugins managing the same stack and reboot. The manager rejects known conflicts such as Nvidia-Driver, i915-sriov and the old vgpu-driver plugin; monitoring-only plugins such as intel-gpu-top are not conflicts.
+
 ## Quick start
 
 Open **Settings → Unraid vGPU Manager**. The page has three tabs:
@@ -121,13 +123,15 @@ Open **Settings → Unraid vGPU Manager**. The page has three tabs:
 
 For NVIDIA, the shortest path is: install a driver on the Drivers tab, set the license server under License & Modules, add a vGPU from the profile list, then bind it to a VM. For Intel, install the driver, set the VF count, add the parameters shown on the page to your active Unraid boot entry, and pass a **VF** (never the PF) through to the VM.
 
+Only `intel_iommu=on iommu=pt` belongs in the recommended boot options. The plugin manages `i915.enable_guc`, `i915.max_vfs` and `i915.xelp_enable_ccs` through modprobe configuration. Remove old copies of those options and remove `xe` from global boot blacklists, then reboot; the Intel tab warns when conflicting options are detected. Only the managed Intel device ID is excluded from xe probing, leaving other xe GPUs available. If the stock i915 or xe driver cannot be released on a **first install**, the package and configuration are saved for the next boot and the page requests a reboot. No console is forcibly detached; updates to an enabled SR-IOV stack still abort when it is busy.
+
 Driver status compares the installed version with the available one and shows both build numbers. Enable the daily check to look for updates when the page opens, or press the check button to query immediately; a check that does not answer within 35 seconds is reported as timed out and the button comes back so you can retry.
 
 ## Driver updates and CCS0
 
 After you confirm **Update driver**, the plugin downloads and verifies the package before identifying consumers from live VM mdev/PCI devices and Docker GPU requests, device mappings and mounts. It requests a normal VM shutdown and aborts after roughly two minutes without forcing power off. Containers use `docker stop --time 30` (Docker may kill them after that timeout). Unidentified host processes can still block module removal; the plugin does not kill them or stop the entire Docker/libvirt service. **Restart stopped VMs and containers manually afterwards**, including checking the log after a failed update. Scheduled checks and kernel pre-staging do not stop workloads.
 
-The Intel tab has a separate **CCS0 switch**, **enabled by default**: the i915 SR-IOV driver itself defaults to off since `2026.09.16`, and the plugin enables `xelp_enable_ccs=1` unless you explicitly disable it here. Saving updates the plugin's modprobe configuration, without changing VF counts or stopping VMs. **Reboot the host or successfully reload a supported driver to apply it.** Unsupported older drivers do not receive the unknown parameter and show an upgrade warning. Any manually configured `i915.xelp_enable_ccs` boot option should agree with this setting.
+The Intel tab has a separate **CCS0 switch**, **enabled by default**: the i915 SR-IOV driver itself defaults to off since `2026.09.16`, and the plugin enables `xelp_enable_ccs=1` unless you explicitly disable it here. Saving updates the plugin's modprobe configuration, without changing VF counts or stopping VMs. **Reboot the host or successfully reload a supported driver to apply it.** Unsupported older drivers do not receive the unknown parameter and show an upgrade warning. Remove manually configured `i915.xelp_enable_ccs` boot options instead of maintaining a second copy.
 
 ## Driver series and hardware
 
@@ -142,7 +146,7 @@ The consumer-card unlock kernel patch is built into the 16.x series only, becaus
 
 ## Pre-staging drivers for an Unraid upgrade
 
-After Unraid writes a new OS to the flash drive, the plugin reads the kernel version actually staged in `/boot/bzimage` and compares it with the running `uname -r`. The OS-update hook checks immediately and a per-minute fallback covers other update paths. The preparation options are reached from the Unraid update notification, not from the normal plugin page.
+After Unraid writes a new OS to the flash drive, the plugin reads the kernel version actually staged in `/boot/bzimage` and compares it with the running `uname -r`. The OS-update hook checks immediately and a five-minute fallback covers other update paths. The preparation options are reached from the Unraid update notification, not from the normal plugin page.
 
 | What you have enabled | What an Unraid upgrade does |
 |---|---|
@@ -154,6 +158,8 @@ After Unraid writes a new OS to the flash drive, the plugin reads the kernel ver
 
 Pre-staging keeps the installed NVIDIA series, so a 535.x or 16.x install does not become 580.x or 19.x just because Unraid was upgraded, and a pinned driver version is respected rather than silently replaced. It only stores files: the running kernel keeps its driver and nothing reboots.
 
+Boot restoration does not contact the license server: it reuses a saved token for the same endpoint when available. Missing tokens are requested in the background after the array starts, so a license server running in a local VM or container does not delay array startup.
+
 ## Cache and package sources
 
 Both driver repositories publish one Release tag per full kernel version, for example `6.18.47-Unraid`:
@@ -163,12 +169,18 @@ Both driver repositories publish one Release tag per full kernel version, for ex
 
 Packages are cached at `/boot/config/plugins/my-unraid-vgpu-manager/packages/<kernel>/`. If you place a package there by hand, add its `.txz.md5` next to it (a `.txz.sha256`, if present, must match too); the plugin verifies the file by content and does not execute or trust paths taken from the checksum file. A package name has to match both the kernel and the driver series.
 
+Online downloads verify GitHub's upload-time SHA-256 asset digest and save it as `.txz.sha256` for offline restoration. Older releases without a digest retain MD5 and optional SHA-256 sidecar verification. Explicit refresh checks the API digest before reusing a same-named cached package. API quota exhaustion is reported separately from other network failures. These checks detect content changes; they are not publisher signatures.
+
+Successful downloads, installations and explicit local restores prune obsolete cache entries. Retained kernels include the running kernel, the staged boot kernel, the previously recorded running kernel, `/boot/previous/bzimage` when readable, and the most recently prepared kernel. Each retained kernel keeps the newest verified build per driver and NVIDIA series, plus installed packages, the selected pinned version and the package just requested. Active downloads/installations hold a cache lock; failed updates do not delete the installed package. If the boot kernel cannot be read, cross-kernel pruning is skipped. Unknown files are not deleted. Boot-time `ensure` does not run this cleanup, avoiding extra USB reads on the array-start path.
+
+The plugin itself uses Slackware-compatible names such as `my-unraid-vgpu-manager-2026.10.23-x86_64-1.txz`, verified by both MD5 and SHA-256 in the manifest. Installation migrates exact legacy package records and removes old plugin archives only after the new payload installs successfully. The existing `raw/master` distribution URL remains unchanged pending a coordinated Release migration.
+
 If no package exists yet for a new kernel, build one in the driver repository. The plugin will not install a package built for a different kernel, and it does not report a failed download as an updated driver.
 
 ## Development and verification
 
 ```bash
-# Rebuild the package and refresh the .plg MD5 after changing source or version
+# Rebuild the package and refresh the .plg MD5/SHA-256 after source/version changes
 python3 scripts/build-plugin.py
 
 # PHP / Bash / JS / JSON / XML, isolated lifecycle regressions, package consistency

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Prepare only opted-in drivers for the kernel staged on the Unraid flash drive.
-# Called after an OS update, once per minute as a fallback, and from the UI.
+# Called after an OS update, every five minutes as a fallback, and from the UI.
 # This script NEVER installs packages or loads/unloads modules.
 set -o pipefail
 source "$(dirname "$(readlink -f "$0")")/common.sh"
@@ -10,7 +10,7 @@ NOTICE_URL="/Settings/${PLUGIN}?kernel_upgrade=1#kernel-upgrade-panel"
 case "$MODE" in auto|prepare) ;; *) exit 1 ;; esac
 LOG="/var/log/${PLUGIN}-upgrade.log"
 if [ "$MODE" = auto ]; then
-  # Cron runs this every minute and appends to a log in RAM.
+  # Cron appends to a log in RAM.
   trim_log "$LOG"
   export VGPU_QUIET=1
 fi
@@ -26,7 +26,7 @@ if [ "$NV" != true ] && [ "$INTEL" != true ]; then
   exit 0
 fi
 
-# The per-minute check reuses the kernel read from an unchanged boot image
+# The periodic check reuses the kernel read from an unchanged boot image
 # instead of starting PHP each time.
 boot_kernel() {
   local cache="/var/tmp/${PLUGIN}-boot-kernel" signature cached kernel

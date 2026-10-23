@@ -31,30 +31,56 @@ valid_kernel "$TARGET_KERNEL" && valid_version "$WANT" || {
   echo 'ERROR: invalid kernel or driver version' >&2; exit 1;
 }
 PKGDIR="$(package_dir "$TARGET_KERNEL")"
+record_running_kernel || exit 1
+exec 5>"${PLGCFG}/.cache.lock"
+flock -s 5 || exit 1
 mkdir -p "$PKGDIR" || exit 1
 exec 7>"${PKGDIR}/.download-${SOURCE}-${SERIES}.lock"
 flock -n 7 || { echo 'ERROR: this driver is already downloading' >&2; exit 1; }
+
+finish_download() {
+  if [ "$TARGET_KERNEL" != "$KERNEL_V" ]; then set_setting prepared_kernel "$TARGET_KERNEL" || return 1; fi
+  flock -u 7; exec 7>&-
+  flock -u 5; exec 5>&-
+  prune_cache "$TARGET_KERNEL" "$1"
+}
 
 if [ "$REFRESH" = false ]; then
   LOCAL_PKG="$(find_package "$SOURCE" "$TARGET_KERNEL" "$SERIES" "$WANT")"
   if [ -n "$LOCAL_PKG" ]; then
     bilingual "Using verified local package: ${LOCAL_PKG##*/}" "使用已校验的本地驱动包：${LOCAL_PKG##*/}"
-    exit 0
+    finish_download "$LOCAL_PKG"; exit $?
   fi
 fi
 
-AVAIL="$(release_assets "$SOURCE" "$TARGET_KERNEL" "$SERIES" "$WANT")" || {
-  bilingual 'ERROR: could not query GitHub. No driver has been installed or updated.' '错误：无法查询 GitHub，未安装或更新任何驱动。' >&2
+AVAIL="$(release_assets "$SOURCE" "$TARGET_KERNEL" "$SERIES" "$WANT" 25 metadata)" || {
+  result=$?
+  [ "$result" = 2 ] || bilingual 'ERROR: could not query GitHub. No driver has been installed or updated.' '错误：无法查询 GitHub，未安装或更新任何驱动。' >&2
   exit 1
 }
-PKG="$(printf '%s\n' "$AVAIL" | tail -1)"
+ASSET="$(printf '%s\n' "$AVAIL" | tail -1)"
+PKG="${ASSET%%$'\t'*}"
+DIGEST="${ASSET#*$'\t'}"; DIGEST="${DIGEST,,}"
+[ "$DIGEST" != "$ASSET" ] || DIGEST=''
+if [ -n "$DIGEST" ] && ! [[ "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+  echo 'ERROR: invalid or unsupported GitHub asset digest' >&2; exit 1
+fi
 [ -n "$PKG" ] || {
   bilingual "ERROR: no matching ${SOURCE} package for ${TARGET_KERNEL} (version ${WANT})." "错误：未找到适用于 ${TARGET_KERNEL} 的 ${SOURCE} 驱动包（版本 ${WANT}）。" >&2
   exit 1
 }
-if package_ok "${PKGDIR}/${PKG}"; then
+package_matches "$PKG" "$SOURCE" "$TARGET_KERNEL" "$SERIES" "$WANT" || {
+  echo 'ERROR: invalid GitHub package metadata' >&2; exit 1;
+}
+if package_ok "${PKGDIR}/${PKG}" &&
+   { [ -z "$DIGEST" ] || [ "$(sha256sum -- "${PKGDIR}/${PKG}" | cut -d' ' -f1)" = "${DIGEST#sha256:}" ]; }; then
+  if [ -n "$DIGEST" ]; then
+    checksum="$(mktemp "${PKGDIR}/.sha256.XXXXXX")" || exit 1
+    printf '%s  %s\n' "${DIGEST#sha256:}" "$PKG" > "$checksum"
+    mv -f "$checksum" "${PKGDIR}/${PKG}.sha256" || exit 1
+  fi
   bilingual "The requested package is already downloaded and verified: $PKG" "所需驱动包已下载并通过校验：$PKG"
-  exit 0
+  finish_download "$PKG"; exit $?
 fi
 case "$SOURCE" in nvidia) REPO="$NVIDIA_REPO" ;; i915) REPO="$I915_REPO" ;; esac
 DL_URL="https://github.com/${REPO}/releases/download/${TARGET_KERNEL}"
@@ -71,18 +97,23 @@ if ! curl -fL "${PROGRESS[@]}" --connect-timeout 15 --max-time 1800 --speed-time
   bilingual "ERROR: download or checksum failed: $PKG" "错误：驱动包下载或校验失败：$PKG" >&2
   exit 1
 fi
-# Releases that also publish SHA-256 are verified against it as well.
-curl -fsSL --connect-timeout 10 --max-time 30 --output "${STAGE}/${PKG}.sha256" "${DL_URL}/${PKG}.sha256" >/dev/null 2>&1 ||
-  rm -f -- "${STAGE}/${PKG}.sha256"
+# GitHub computes this digest at upload time. Older releases may lack it;
+# keep compatibility with their MD5 and optional SHA-256 sidecars.
+if [ -n "$DIGEST" ]; then
+  printf '%s  %s\n' "${DIGEST#sha256:}" "$PKG" > "${STAGE}/${PKG}.sha256"
+else
+  curl -fsSL --connect-timeout 10 --max-time 30 --output "${STAGE}/${PKG}.sha256" "${DL_URL}/${PKG}.sha256" >/dev/null 2>&1 ||
+    rm -f -- "${STAGE}/${PKG}.sha256"
+fi
 if ! package_ok "${STAGE}/${PKG}"; then
   bilingual "ERROR: download or checksum failed: $PKG" "错误：驱动包下载或校验失败：$PKG" >&2
   exit 1
 fi
-# Publish only complete files. Retain other drivers, branches, the running
-# kernel, rollback kernels and pre-downloaded upgrade kernels.
+# Publish only complete files, then prune obsolete verified builds/kernels.
 rm -f -- "${PKGDIR}/${PKG}.sha256"
 if [ -f "${STAGE}/${PKG}.sha256" ]; then mv -f -- "${STAGE}/${PKG}.sha256" "${PKGDIR}/${PKG}.sha256" || exit 1; fi
 mv -f -- "${STAGE}/${PKG}.md5" "${PKGDIR}/${PKG}.md5" &&
   mv -f -- "${STAGE}/${PKG}" "${PKGDIR}/${PKG}" || exit 1
 sync -f "$PKGDIR" 2>/dev/null || sync
 bilingual "Downloaded and verified: $PKG" "驱动包已下载并通过校验：$PKG"
+finish_download "$PKG"

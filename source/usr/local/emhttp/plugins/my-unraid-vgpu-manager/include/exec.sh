@@ -12,7 +12,7 @@ cron_entries() {
     printf '17 9 * * * %s/include/update-check.sh >/dev/null 2>&1\n' "$EMHTTP"
   fi
   # OS updates still need a notification when automatic preparation is off.
-  printf '* * * * * %s/include/upgrade-check.sh auto >>/var/log/%s-upgrade.log 2>&1\n' "$EMHTTP" "$PLUGIN"
+  printf '*/5 * * * * %s/include/upgrade-check.sh auto >>/var/log/%s-upgrade.log 2>&1\n' "$EMHTTP" "$PLUGIN"
 }
 
 without_plugin_entries() {
@@ -65,6 +65,7 @@ install_nvidia() {
   local series="${1:-$(nvidia_series)}" pkg
   series_prefix "$series" >/dev/null || return 1
   operation_lock || return 1
+  check_conflicting_plugins nvidia || return 1
   "$EMHTTP/include/download.sh" nvidia "$series" latest || return 1
   pkg="$(find_package nvidia "$KERNEL_V" "$series")" || return 1
   "$RC" nvidia_install "$pkg"
@@ -86,6 +87,7 @@ update_driver() {
   series_prefix "$series" >/dev/null && valid_version "$want" || return 1
   [ "$(setting nvidia_installed)" = true ] || { echo 'ERROR: NVIDIA is not enabled'; return 1; }
   operation_lock || return 1
+  check_conflicting_plugins nvidia || return 1
   "$EMHTTP/include/download.sh" nvidia "$series" "$want" --refresh || return 1
   pkg="$(find_package nvidia "$KERNEL_V" "$series" "$want")" || return 1
   "$RC" nvidia_update "$pkg" stop-workloads
@@ -95,6 +97,7 @@ update_driver() {
 install_intel() {
   local pkg
   operation_lock || return 1
+  check_conflicting_plugins i915 || return 1
   "$EMHTTP/include/download.sh" i915 latest || return 1
   pkg="$(find_package i915 "$KERNEL_V")" || return 1
   "$RC" intel_install "$pkg"
@@ -104,6 +107,7 @@ update_intel() {
   local pkg
   [ "$(setting intel_installed)" = true ] || { echo 'ERROR: Intel is not enabled'; return 1; }
   operation_lock || return 1
+  check_conflicting_plugins i915 || return 1
   "$EMHTTP/include/download.sh" i915 latest --refresh || return 1
   pkg="$(find_package i915 "$KERNEL_V")" || return 1
   "$RC" intel_update "$pkg"

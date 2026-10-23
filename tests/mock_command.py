@@ -44,6 +44,12 @@ if command == 'curl':
     elif 'api.github.com' in url:
         match = re.search(r'/repos/hellomrli/(.+)/releases/tags/(.+)$', url)
         key = '|'.join(match.groups()) if match else ''
+        if state.get('rate_limited'):
+            headers = option('--dump-header')
+            if headers:
+                Path(headers).write_bytes(b'HTTP/2 403\r\nX-RateLimit-Remaining: 0\r\n\r\n')
+            print('curl: (22) simulated rate limit', file=sys.stderr)
+            finish(22)
         if state.get('hang_metadata'):
             # Deliberately ignore curl's own timeout and graceful termination.
             # The web deadline must kill this descendant and release its lock.
@@ -60,7 +66,7 @@ if command == 'curl':
         if names is None:
             print('curl: (22) simulated 404: no release for kernel', file=sys.stderr)
             finish(22)
-        payload = json.dumps({'assets': [{'name': n} for n in names]}).encode()
+        payload = json.dumps({'assets': [{'name': n, 'digest': state.get('asset_digests', {}).get(n)} for n in names]}).encode()
     else:
         filename = url.rsplit('/', 1)[-1]
         remote = root / 'remote' / filename
@@ -77,12 +83,13 @@ if command == 'upgradepkg':
         finish(1, 'simulated package installation failure')
     package = args[-1].split('%')[-1]
     name = Path(package).name.removesuffix('.txz')
-    prefix = 'nvidia-' if name.startswith('nvidia-') else 'i915-sriov-'
+    prefix = ('nvidia-' if name.startswith('nvidia-') else
+              'my-unraid-vgpu-manager-' if name.startswith('my-unraid-vgpu-manager-') else 'i915-sriov-')
     for old in Path('/var/log/packages').glob(prefix + '*'):
         old.unlink()
     (Path('/var/log/packages') / name).write_text('installed\n')
     if prefix == 'nvidia-': state['nvidia_disk_version'] = name.split('-')[1]
-    else: state['intel_disk_version'] = name.removeprefix(prefix).split('-')[0]
+    elif prefix == 'i915-sriov-': state['intel_disk_version'] = name.removeprefix(prefix).split('-')[0]
     finish()
 if command == 'removepkg':
     (Path('/var/log/packages') / args[-1]).unlink(missing_ok=True)
@@ -118,6 +125,9 @@ if command == 'killall':
     finish()
 if command in ('nvidia-vgpud', 'nvidia-vgpu-mgr', 'nvidia-gridd'):
     state.setdefault('processes', []).append(command)
+    state.setdefault('daemon_streams', {})[command] = {
+        str(fd): os.readlink(f'/proc/self/fd/{fd}') if Path(f'/proc/self/fd/{fd}').exists() else 'closed'
+        for fd in (0, 1, 2, 9)}
     finish()
 if command == 'fuser':
     finish(0 if state.get('vf_busy') else 1)
