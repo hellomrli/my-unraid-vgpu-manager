@@ -75,7 +75,7 @@ try {
             break;
         case 'save_intel_ccs':
             $output = vgpu_apply(['intel_set_ccs', vgpu_choice('xelp_enable_ccs', ['true','false'])], $lock, true);
-            $message = vgpu_t('CCS setting saved. Reboot or reload a supported i915 driver to apply it. Running VFs are unchanged.');
+            $message = vgpu_t('CCS setting saved. Reboot or reload a supported Intel driver to apply it. Running VFs are unchanged.');
             if (strpos($output, 'does not support xelp_enable_ccs') !== false) $message .= ' '.vgpu_t('This driver does not support CCS control. Upgrade the driver first.');
             break;
         case 'save_intel':

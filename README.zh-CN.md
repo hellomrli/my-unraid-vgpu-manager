@@ -1,210 +1,80 @@
-<p align="center">
-  <img src="./source/usr/local/emhttp/plugins/my-unraid-vgpu-manager/images/large.png" width="200" alt="my-unraid-vgpu-manager 插件图标">
-</p>
+<img src="./source/usr/local/emhttp/plugins/my-unraid-vgpu-manager/images/large.png" align="right" width="88" alt="Unraid vGPU 管理器图标">
 
-<h1 align="center">my-unraid-vgpu-manager</h1>
+# my-unraid-vgpu-manager
 
-<p align="center">一个 Unraid 插件，在一个设置页面里管理 NVIDIA vGPU 与 Intel i915 SR-IOV：驱动安装与更新、vGPU 设备与虚拟机绑定，以及 Unraid 升级前的驱动预下载。</p>
+在 Unraid 中管理 NVIDIA vGPU 与 Intel SR-IOV：下载匹配的驱动、分配虚拟 GPU 给虚拟机，并在重启后恢复。
 
-<p align="center">
-  <a href="./README.md">English</a> | <a href="./README.zh-CN.md">简体中文</a>
-</p>
+[English](README.md) · [简体中文](README.zh-CN.md) · [使用指南](docs/guide.zh-CN.md)
 
-<p align="center">
-  <a href="https://github.com/hellomrli/my-unraid-vgpu-manager/actions/workflows/check.yml"><img src="https://github.com/hellomrli/my-unraid-vgpu-manager/actions/workflows/check.yml/badge.svg" alt="校验工作流状态"></a>
-  <a href="https://unraid.net/"><img src="https://img.shields.io/badge/Unraid-7.2.3%2B-orange" alt="需要 Unraid 7.2.3 或更新版本"></a>
-</p>
+[![验证状态](https://github.com/hellomrli/my-unraid-vgpu-manager/actions/workflows/check.yml/badge.svg)](https://github.com/hellomrli/my-unraid-vgpu-manager/actions/workflows/check.yml)
+[![许可证：GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 
-## 这个插件解决什么
+## 安装插件
 
-在 Unraid 上把一块显卡同时分给虚拟机和容器，通常意味着一串重复劳动：手工拼内核模块、为每一个驱动构建匹配精确的 Unraid 内核版本，系统一升级还得重来一遍。这个插件把这些事收在一个页面里完成——安装和更新驱动包、创建 vGPU 设备并绑定给虚拟机，以及在你重启进新内核之前把驱动准备好。
+**[插件安装链接（.plg）](https://github.com/hellomrli/my-unraid-vgpu-manager/raw/master/my-unraid-vgpu-manager.plg)**
 
-NVIDIA vGPU 与 Intel i915 SR-IOV 是两套独立的栈，驱动也来自两个仓库，插件按这个事实分别管理：各自有安装状态、各自的更新检查和各自的缓存。只有你明确启用的驱动才会被检查和准备。
-
-## 核心亮点
-
-| 亮点 | 说明 |
-|---|---|
-| 两套 GPU 栈同页管理 | 驱动管理、NVIDIA 显卡、Intel i915 SR-IOV 三个标签页同属一个设置入口，界面跟随 Unraid 自身语言，没有插件专用的语言切换控件 |
-| NVIDIA 合并驱动 | 同一个包内同时包含 vGPU 宿主驱动与标准 NVIDIA 驱动，显卡既能给虚拟机用，也能给容器用（`--gpus all`），而不是只能二选一 |
-| 两套驱动系列按硬件匹配 | 16.x LTS（535.309.01）面向 Pascal 世代（P4/P40/P100 等），19.x LTS（580.178.05）面向 T4 及更新型号；插件读取已安装型号后给出匹配的系列 |
-| 驱动热更新 | 没有虚拟机占用 vGPU 时，新驱动包可直接装到当前运行的内核上，无需重启 |
-| 升级前预下载 | 读取 `/boot/bzimage` 中实际准备启动的内核，只为已启用的驱动下载对应包；全程不安装包、不加载也不卸载模块 |
-| 开机恢复不依赖网络 | 已启用的驱动与 vGPU 设备在每次开机时从本地已校验的包恢复，只靠启动盘也能带着 GPU 起来 |
-
-## 架构
+打开 Unraid 的 **插件（Plugins）→ 安装插件（Install Plugin）**，粘贴下面的地址。点击代码块右上角的**复制按钮**即可复制完整链接：
 
 ```text
-┌────────────────────────────────────────────────────────────────────┐
-│  Unraid 界面   设置 → Unraid vGPU 管理器                           │
-│  驱动管理 ｜ NVIDIA 显卡 ｜ Intel i915 SR-IOV                      │
-└───────────────┬────────────────────────────────────────────────────┘
-               │
-               ▼
-┌────────────────────────────────────────────────────────────────────┐
-│  PHP   web.php · actions.php · kernel.php                          │
-└───────────────┬────────────────────────────────────────────────────┘
-               │
-               ▼
-┌────────────────────────────────────────────────────────────────────┐
-│  Shell   rc.vgpu · common.sh · download.sh                         │
-│          update-check.sh · upgrade-check.sh                        │
-└───────────────┬────────────────────────────────────┬───────────────┘
-               │                                    │
-               ▼                                    ▼
-┌───────────────────────────┐      ┌─────────────────────────────────┐
-│  /boot/config/plugins/    │      │  GitHub Release 资产            │
-│    my-unraid-vgpu-manager/│      │  my-nvidia-vgpu-driver          │
-│    packages/<kernel>/     │      │  my-i915-sriov-driver 构建      │
-└───────────────┬───────────┘      └─────────────────────────────────┘
-               │
-               ▼
-┌────────────────────────────────────────────────────────────────────┐
-│  内核模块与 vGPU 设备 → 虚拟机、Docker（--gpus all）               │
-└────────────────────────────────────────────────────────────────────┘
-```
-
-页面负责渲染界面，`kernel.php` 读取下次启动所用的内核，Shell 层承担所有涉及软件包与模块的动作。驱动包存放在启动盘的 `/boot/config/plugins/my-unraid-vgpu-manager/packages/<kernel>/`，开机恢复与升级前预下载都靠它避免重复下载。
-
-## 使用示例
-
-安装插件本身不会安装任何 GPU 驱动。一次完整的首次使用，都在 Unraid 界面里完成：
-
-```text
-# 1. Plugins -> Install Plugin，填入插件地址
-https://github.com/hellomrli/my-unraid-vgpu-manager/raw/master/my-unraid-vgpu-manager.plg
-
-# 2. 设置 → Unraid vGPU 管理器 → 驱动管理
-#    选择与显卡匹配的系列并安装 NVIDIA 驱动。
-#    首次安装可以复用本地已校验的包。
-
-# 3. 驱动管理页按需启用每日更新检查。
-#    检查只读取 Release 元数据，不下载也不安装任何东西。
-
-# 4. NVIDIA 显卡 → 授权与模块
-#    设置授权服务器、端口与 FeatureType，然后保存。
-
-# 5. NVIDIA 显卡页选择显卡与配置档，生成 UUID，添加 vGPU。
-
-# 6. NVIDIA 显卡页把设备绑定到目标虚拟机。
-#    绑定是持久配置：关闭虚拟机后重新启动，
-#    设备才会在一次真正的冷启动中挂上。
-```
-
-预期结果：vGPU 出现在设备列表里并带有配置档与 UUID，虚拟机启动时设备已挂载，且因为配置写在启动盘上，重启后依然存在。
-
-动手前有两件事值得先知道：
-
-- 运行中的虚拟机仍占用的设备会一直显示为被占用。需要先在虚拟机配置里解绑，再关闭虚拟机；占用中的设备无法删除或停止。
-- 要切换 NVIDIA 驱动系列，先停掉所有使用该 GPU 的虚拟机与容器，在「授权与模块」里选择目标系列并保存，再用那里的切换按钮。普通的驱动更新会留在当前已安装的系列内。
-
-## 快速安装
-
-需要 Unraid 7.2.3 或更新版本，以及一块受支持的显卡。在 Unraid 界面里安装：
-
-```text
-Plugins -> Install Plugin
 https://github.com/hellomrli/my-unraid-vgpu-manager/raw/master/my-unraid-vgpu-manager.plg
 ```
 
-更新与卸载同样走 Unraid 的插件管理器。卸载会移除界面、更新钩子与定时任务，并调用 `rc.vgpu stop`，但不会强制关闭正在运行的虚拟机；你的设置与驱动缓存保留在启动盘上，重启后驱动退出。
+需要 **Unraid 7.2.3 或更新版本**及兼容的 GPU。Unraid 会通过这个 `.plg` 下载对应的插件安装包，后续更新同样使用插件管理器；**无需插件 GitHub Release，也无需手动下载安装包。** 安装插件本身不会安装 GPU 驱动。
 
-安装驱动前，请卸载管理同一驱动的其他插件并重启。插件会拒绝 Nvidia-Driver、i915-sriov、旧 vgpu-driver 等已知冲突；仅监控 GPU 的 intel-gpu-top 不属于冲突插件。
+> [!IMPORTANT]
+> **Intel SR-IOV 默认、推荐使用 i915；xe 是可选的实验性驱动，切换需要重启。** 升级插件不会自动将现有用户切换到 xe。
 
 ## 快速开始
 
-打开 **设置 → Unraid vGPU 管理器**，页面分为三个标签：
+打开 **设置 → Unraid vGPU 管理器**。安装驱动前，先卸载管理同一驱动的其他插件并重启；仅监控 GPU 的 intel-gpu-top 不属于冲突插件。
 
-| 标签页 | 内容 |
+| 你的 GPU | 首次使用 |
 |---|---|
-| 驱动管理 | 驱动状态、可更新版本与更新按钮、安装与卸载、定时检查设置 |
-| NVIDIA 显卡 | 驱动系列、授权、模块、unlock、vGPU 配置档、设备管理与虚拟机绑定 |
-| Intel i915 SR-IOV | VF 数量、直通状态，以及需要添加的启动参数 |
+| 支持 SR-IOV 的 Intel GPU | 在**驱动管理**中保留 **i915（推荐）**并安装，按照 Intel 页面的 IOMMU/启动提示操作，需要时重启。设置 VF 数量，再将 **VF** 直通给虚拟机，**不要直通 PF**。 |
+| 支持 vGPU 的 NVIDIA GPU | 在**驱动管理**中选择支持的系列并安装。在 **NVIDIA 显卡**页配置授权、按配置档创建 vGPU 并绑定虚拟机，冷启动虚拟机后挂载设备。 |
 
-NVIDIA 的最短路径是：在驱动管理页装上驱动，在「授权与模块」里设置授权服务器，从配置档列表添加 vGPU，再绑定给一台虚拟机。Intel 则是：装上驱动、设置 VF 数量、把页面给出的参数加入当前 Unraid 启动项，然后把 **VF**（不是 PF）直通给虚拟机。
+完成后，页面会显示所选驱动与虚拟 GPU 设备；已启用的设备会在开机时从已校验的缓存包恢复。客户机仍需安装兼容的 GPU 驱动。
 
-推荐写入启动项的只有 `intel_iommu=on iommu=pt`。`i915.enable_guc`、`i915.max_vfs` 和 `i915.xelp_enable_ccs` 由插件的 modprobe 配置统一管理；请移除启动项中的旧副本，并从全局黑名单中移除 `xe`，然后重启。Intel 标签页会警告检测到的冲突参数。插件仅阻止 xe 探测所管理的 Intel 设备 ID，不禁用其他需要 xe 的显卡。**首次安装**时，若原生 i915 / xe 驱动无法释放，插件会保存驱动包和配置，提示重启生效，而不强制解绑控制台；已启用 SR-IOV 驱动的更新仍会在设备被占用时中止。
+![驱动管理页：默认 i915 与实验性 xe 选择器，使用测试数据](docs/assets/drivers-zh.png)
 
-驱动状态会把已安装版本与可用版本并排显示，并同时给出两边的构建号。启用每日检查后，打开页面就会查询或复用最近的结果；也可以按检查按钮立即查询。超过 35 秒没有应答会提示超时并恢复检查按钮，方便重试。
+*截图来自隔离测试环境，用于展示界面，不代表真机兼容性认证。*
 
-## 驱动更新与 CCS0
+## 选择 i915 或 xe
 
-点击“更新驱动”并确认后，插件先下载并校验，再根据活动 VM 的 mdev/PCI 设备和 Docker 的 GPU 请求、设备/目录映射识别相关工作负载。VM 正常关机，等待约两分钟仍未退出则中止，不强制断电；容器使用 `docker stop --time 30`（超时可能被 Docker 强制停止）。未识别出的宿主进程占用仍会阻止驱动卸载，不会强杀进程或停掉整个 Docker/libvirt 服务。已停止的 VM 和容器在更新后**需要手动启动**；失败时也请查看日志确认哪些已停止。定时检查和内核预下载不会停止工作负载。
-
-Intel 标签页提供独立的 **CCS0 开关**，**默认启用**：i915 SR-IOV 驱动自 `2026.09.16` 起自身默认关闭该特性，插件默认帮你打开（`xelp_enable_ccs=1`），需要时在这里显式关闭即可。设置保存到插件自己的 modprobe 配置，**重启宿主机或成功重新加载支持该参数的驱动后生效**；保存不会更改 VF 数量或停止虚拟机。旧驱动不会收到不支持的参数，会提示先升级。请移除启动项中手动设置的 `i915.xelp_enable_ccs`，不要再维护另一份配置。
-
-## 驱动系列与硬件
-
-| 系列 | 当前包版本 | 选择建议 |
-|---|---|---|
-| 16.x | 535.309.01 | Pascal 世代（P4、P40、P100 等）以及需要 `vgpu_unlock` 的设备；16.x 已结束维护 |
-| 19.x | 580.178.05 | 该分支支持的较新 GPU；新安装且硬件同时出现在两个系列列表时，推荐 19.x |
-
-硬件提示来自各分支 `vgpuConfig.xml` 中的 PCI ID，它既不是 NVIDIA 的认证结论，也不代表真机验证过。较新的架构可能还要求先启用 NVIDIA SR-IOV，而本插件不会替你运行 `sriov-manage`。本仓库已验证的硬件仅限于 Tesla P4，不能因为它在 P4 上可用就推断其他型号同样可用。
-
-消费卡解锁的内核补丁只构建在 16.x 系列里，因为它的 config magic 是 535 专属的。上游 `vgpu_unlock` 覆盖 Maxwell、Pascal 与 Turing（GTX 9/10、RTX 20 系列），RTX 30 属实验性支持，RTX 40 不支持。原生支持 vGPU 的卡（例如 P4）本来就不需要 unlock。
-
-## Unraid 升级前的驱动准备
-
-Unraid 把新系统写入启动盘后，插件读取 `/boot/bzimage` 中**实际准备启动的内核版本**，与当前 `uname -r` 比较。系统更新钩子会立即检查，另有每 5 分钟一次的兜底覆盖其他更新方式。准备选项从 Unraid 的更新通知进入，普通打开插件页面时不显示。
-
-| 当前启用的驱动 | 升级 Unraid 时的行为 |
+| 驱动 | 选择建议 |
 |---|---|
-| 未启用任何 GPU 驱动 | 不查询、不下载；需要时再手动安装 |
-| 只启用 NVIDIA vGPU | 只为新内核检查并下载 NVIDIA 驱动，Intel 不参与 |
-| 只启用 Intel i915 SR-IOV | 只为新内核检查并下载 Intel 驱动，NVIDIA 不参与 |
-| 两者均启用 | 分别准备，全部通过校验后才报告就绪 |
-| 缺包、网络错误或校验失败 | 报告未就绪，并保留已有驱动包，便于检查或回退 |
+| **i915** | **默认、推荐。** 保持本项目已有的 Intel SR-IOV 使用路线；上游 xe 更新并不意味着需要切换当前正常工作的驱动。 |
+| **xe** | **实验性，手动选择。** Intel 较新的驱动架构，以独立驱动包提供，适合进行兼容性验证与测试。 |
 
-预下载保持当前已安装的 NVIDIA 系列，535.x 或 16.x 不会因为升级系统就变成 580.x 或 19.x；已固定的驱动版本同样被尊重，不会被悄悄替换。它只保存文件：当前运行的内核继续用原来的驱动，也不会触发重启。
+较新不等于在你的 Unraid SR-IOV 负载中更快、更稳定。两个包均来自 [strongtz 社区实验性移植](https://github.com/strongtz/i915-sriov-dkms)，并非 Intel 的生产环境支持承诺。该移植目前明确警告其 **xe 模块不支持 Meteor Lake 和 Lunar Lake**；这不代表主线 xe 的情况，也不保证这些平台都能使用 i915 SR-IOV。
 
-启动恢复阶段不联网获取授权：服务端地址、端口和证书设置一致时复用已保存的令牌，缺少令牌则等阵列启动后在后台请求。本机 VM / 容器中的授权服务器不可达时，不会因此阻塞阵列启动。
+在**驱动管理 → Intel SR-IOV 驱动**中切换：
 
-## 缓存与包来源
+1. 选择目标驱动并确认。插件下载、校验独立驱动包，保留回退缓存并准备下次启动配置；不会停止工作负载、替换运行中的包或改变当前 VF。
+2. 测试 xe 前，关闭 GPU 虚拟机/容器的自动启动，再重启。驱动在阵列启动前从本地缓存激活；驱动失败**不保证** Unraid 会取消工作负载自动启动。
+3. 核对实际加载的驱动和 VF 直通，再启动 GPU 工作负载。重启前可以取消切换；重启后测试失败，则选择 i915 并再次重启回退。
 
-两个驱动仓库都按**完整内核版本**发布 Release tag，例如 `6.18.47-Unraid`：
+**不要手动同时安装两个 Intel 包**：它们共用兼容模块，必须互斥。启动参数冲突、多 GPU 限制和故障日志见[切换与恢复细节](docs/guide.zh-CN.md#选择-i915-或-xe)。
 
-- NVIDIA：[hellomrli/my-nvidia-vgpu-driver](https://github.com/hellomrli/my-nvidia-vgpu-driver)
-- Intel：[hellomrli/my-i915-sriov-driver](https://github.com/hellomrli/my-i915-sriov-driver)，基于 [strongtz/i915-sriov-dkms](https://github.com/strongtz/i915-sriov-dkms) 构建
+## 主要功能
 
-驱动包缓存在 `/boot/config/plugins/my-unraid-vgpu-manager/packages/<kernel>/`。手动放置包时，需要同时提供对应的 `.txz.md5`（如同时存在 `.txz.sha256`，也必须一致）；插件按文件内容校验，不执行也不信任 checksum 文件里写的路径。包名必须同时匹配内核与驱动系列。
+- **独立管理 GPU 栈**：NVIDIA 与所选 Intel 驱动分别维护安装状态、更新检查及缓存。
+- **按内核匹配驱动**：升级 Unraid 后，为实际写入 `/boot/bzimage` 的内核预下载已启用的驱动，不改动当前运行的驱动。
+- **离线开机恢复**：从已校验的缓存包恢复启用的驱动和设备，不依赖开机时联网。
+- **手动执行驱动更新**：定时检查只提示可用更新；明确执行更新可能停止相关 GPU 工作负载，之后需要手动启动。
+- **NVIDIA 系列与 Intel CCS0**：按硬件选择 NVIDIA 系列，为支持的 Intel 模块提供独立 CCS0 偏好设置。
 
-在线下载校验 GitHub 上传时计算的 SHA-256 `digest`，并将其保存为 `.txz.sha256`，供离线恢复使用。旧资产没有 digest 时，仍兼容 MD5 与可选的 SHA-256 校验文件。显式刷新会先比对 API digest，再决定是否复用同名缓存；API 额度用尽会单独提示。这些检查可发现内容变化，但不等同于发布者签名。
+Intel 驱动仓库只跟进当前正式版、当前公开 beta/RC 使用的内核，以及 ich777 的最新备编内核，合并去重后维护。历史包保留，但退出这些来源的旧内核不再更新。[查看内核覆盖与 Intel 驱动说明](https://github.com/hellomrli/my-i915-sriov-driver#内核覆盖与更新)。
 
-成功下载、安装和显式本地恢复后会清理过时缓存。保留运行内核、待启动内核、记录的上一次运行内核、可读取的 `/boot/previous/bzimage` 内核，以及最近一次预下载的内核；各内核按驱动类型和 NVIDIA 系列保留最新的有效构建，同时保护已安装包、固定版本及本次请求的包。下载和安装期间持有缓存锁，更新失败不会删除已安装驱动的缓存。无法读取待启动内核时跳过跨内核清理；不删除无法识别的文件。开机 `ensure` 不额外执行此清理，避免阵列启动时增加 U 盘读取。
+## 文档与反馈
 
-插件自身改用 `my-unraid-vgpu-manager-2026.10.23-x86_64-1.txz` 这样的 Slackware 规范包名，清单同时提供 MD5 / SHA-256。安装时仅迁移精确匹配的旧包记录，并在新包安装成功后清理旧插件压缩包。现有 `raw/master` 分发地址暂不改变，Release 分发需协调发布流程后迁移。
-
-如果新内核还没有对应的包，可以在驱动仓库里构建。插件不会把为其他内核构建的包装上去，也不会把下载失败说成驱动已更新。
-
-## 开发与验证
-
-```bash
-# 修改源码或版本号后重建包，并刷新 .plg 的 MD5 / SHA-256
-python3 scripts/build-plugin.py
-
-# PHP / Bash / JS / JSON / XML、隔离的生命周期回归测试、包与源码一致性
-./scripts/check.sh
-
-# 浏览器交互验证（需要 Chrome / Chromium）
-npm ci
-python3 tests/browser_server.py
-```
-
-检查依赖 PHP CLI（含 SimpleXML）、Python 3.9+、Node.js、ShellCheck、jq、bubblewrap 与 GNU coreutils，与 Unraid 自带的环境一致。回归测试在无网络、无宿主 GPU 的隔离文件系统中运行，从不调用宿主的驱动管理命令。浏览器测试用同一套隔离文件系统配合本地 HTTP 服务，覆盖表单、跟随 Unraid 语言、驱动版本提示、通知入口、移动布局，以及无响应、超时后重试和迟到响应的处理。
-
-CI 在 `ubuntu-24.04` 上执行同样的命令，并把抓取到的界面截图作为工作流产物上传。
-
-## 项目链接
-
-| 主题 | 链接 |
+| 需要什么 | 入口 |
 |---|---|
-| 修复记录与验证边界 | [docs/REVIEW.md](docs/REVIEW.md) |
-| 插件清单与变更日志 | [my-unraid-vgpu-manager.plg](my-unraid-vgpu-manager.plg) |
-| NVIDIA 驱动包 | [hellomrli/my-nvidia-vgpu-driver](https://github.com/hellomrli/my-nvidia-vgpu-driver) |
-| Intel 驱动包 | [hellomrli/my-i915-sriov-driver](https://github.com/hellomrli/my-i915-sriov-driver) |
-| Intel SR-IOV 上游 | [strongtz/i915-sriov-dkms](https://github.com/strongtz/i915-sriov-dkms) |
+| 配置、更新、卸载与恢复 | [使用指南](docs/guide.zh-CN.md) |
+| NVIDIA 系列与硬件限制 | [硬件说明](docs/guide.zh-CN.md#驱动系列与硬件) |
+| 修改或验证插件 | [开发与验证](docs/guide.zh-CN.md#开发与验证) |
+| 反馈问题 | [Issues](https://github.com/hellomrli/my-unraid-vgpu-manager/issues)，请附 Unraid/内核版本、GPU 型号及相关日志，注意移除密钥等敏感信息 |
+| 插件变更与安装包校验值 | [插件清单](my-unraid-vgpu-manager.plg) |
+| 驱动来源 | [Intel](https://github.com/hellomrli/my-i915-sriov-driver) · [NVIDIA](https://github.com/hellomrli/my-nvidia-vgpu-driver) |
 
-## 许可证
-
-本项目基于 [GNU 通用公共许可证第 3 版](./LICENSE)发布。
+[GPL-3.0](LICENSE)。自动化测试覆盖打包、隔离的生命周期行为与中英文界面，不能替代你的 Unraid 真机验证。

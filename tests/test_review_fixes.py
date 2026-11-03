@@ -362,6 +362,7 @@ class ReviewFixes(unittest.TestCase):
         self.assertTrue(gridd.exists())
 
     def test_intel_ensure_sets_vf_count_once(self):
+        self.box.settings(intel_installed='true')
         result = self.box.shell(f'source {BASE}/scripts/rc.vgpu; intel_has_gpu() {{ return 0; }}; '
                                 'intel_write_config() { return 0; }; '
                                 'intel_set_vfs() { echo once >> /tmp/fixture/vf-calls; }; intel_do_ensure')

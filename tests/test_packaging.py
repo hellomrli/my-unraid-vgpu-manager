@@ -12,6 +12,14 @@ REPO = Path(__file__).resolve().parents[1]
 
 
 class Packaging(unittest.TestCase):
+    def test_migration_defaults_to_i915_without_overwriting_existing_selection(self):
+        manifest = ET.parse(REPO / 'my-unraid-vgpu-manager.plg').getroot()
+        script = next(entry.findtext('INLINE') for entry in manifest.findall('FILE')
+                      if 'for pair in first_installation=' in (entry.findtext('INLINE') or ''))
+        self.assertIn('intel_driver=i915', script)
+        self.assertIn('grep -q "^${key}=" "$SETTINGS"', script)
+        self.assertNotIn('intel_driver=xe', script)
+
     def test_manifest_uses_a_slackware_package_name_and_both_checksums(self):
         manifest = ET.parse(REPO / 'my-unraid-vgpu-manager.plg').getroot()
         version = manifest.get('version')

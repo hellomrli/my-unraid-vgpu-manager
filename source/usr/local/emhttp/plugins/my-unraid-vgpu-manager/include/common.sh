@@ -8,6 +8,51 @@ KERNEL_V="$(uname -r)"
 NVIDIA_REPO="hellomrli/my-nvidia-vgpu-driver"
 I915_REPO="hellomrli/my-i915-sriov-driver"
 
+valid_intel_driver() { case "$1" in i915|xe) return 0 ;; *) return 1 ;; esac; }
+
+intel_driver() {
+  local driver
+  driver="$(setting intel_driver)"; driver="${driver:-i915}"
+  valid_intel_driver "$driver" || { echo 'ERROR: invalid Intel driver setting' >&2; return 1; }
+  printf '%s\n' "$driver"
+}
+
+intel_pending_driver() {
+  local driver
+  driver="$(setting intel_pending_driver)"
+  [ -z "$driver" ] || valid_intel_driver "$driver" || return 1
+  printf '%s\n' "$driver"
+}
+
+intel_boot_driver() {
+  local pending
+  pending="$(intel_pending_driver)" || return 1
+  if [ -n "$pending" ]; then printf '%s\n' "$pending"; else intel_driver; fi
+}
+
+intel_opted_in() { [ "$(setting intel_installed)" = true ] || [ -n "$(intel_pending_driver)" ]; }
+
+boot_id() {
+  local id
+  id="$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)"
+  [[ "$id" =~ ^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$ ]] || return 1
+  printf '%s\n' "$id"
+}
+
+# Plugin upgrades also call restore. A queued switch must survive those calls
+# without being mistaken for a reboot.
+intel_switch_due() {
+  local current previous
+  [ -n "$(intel_pending_driver)" ] || return 1
+  current="$(boot_id)" || return 1
+  previous="$(setting intel_pending_boot_id)"
+  [[ "$previous" =~ ^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$ ]] && [ "$current" != "$previous" ]
+}
+
+release_tag() {
+  case "$1" in nvidia|i915) printf '%s\n' "$2" ;; xe) printf 'xe-%s\n' "$2" ;; *) return 1 ;; esac
+}
+
 setting() {
   grep -m1 "^${1}=" "${SETTINGS}" 2>/dev/null | cut -d '=' -f2-
 }
@@ -39,6 +84,32 @@ set_setting() (
   [ "$found" = 1 ] || printf '%s=%s\n' "$key" "$value" >> "$tmp"
   chmod 0644 "$tmp" 2>/dev/null || true
   mv -f "$tmp" "$SETTINGS"
+)
+
+# Commit related switch fields together, using the same lock as PHP/settings.
+set_settings() (
+  local key value line tmp
+  local -A values=() written=()
+  [ "$#" -gt 0 ] && [ "$(( $# % 2 ))" = 0 ] || return 1
+  while [ "$#" -gt 0 ]; do
+    key="$1"; value="$2"; shift 2
+    [[ "$key" =~ ^[a-z][a-z0-9_]*$ && "$value" != *$'\n'* && "$value" != *$'\r'* ]] || return 1
+    values["$key"]="$value"
+  done
+  mkdir -p "$PLGCFG" || return 1
+  exec 8>"${SETTINGS}.lock"; flock -x 8 || return 1
+  tmp="$(mktemp "${PLGCFG}/.settings.XXXXXX")" || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    key="${line%%=*}"
+    if [[ "$line" == *=* && "$key" =~ ^[a-z][a-z0-9_]*$ ]] && [ "${values[$key]+yes}" = yes ]; then
+      if [ -z "${written[$key]:-}" ]; then printf '%s=%s\n' "$key" "${values[$key]}"; written["$key"]=1; fi
+    else printf '%s\n' "$line"; fi
+  done < <(cat "$SETTINGS" 2>/dev/null) > "$tmp"
+  for key in "${!values[@]}"; do
+    [ -n "${written[$key]:-}" ] || printf '%s=%s\n' "$key" "${values[$key]}" >> "$tmp"
+  done
+  if cmp -s "$tmp" "$SETTINGS"; then rm -f "$tmp"; return 0; fi
+  chmod 0644 "$tmp" && mv -f "$tmp" "$SETTINGS"
 )
 
 valid_kernel() {
@@ -84,7 +155,7 @@ package_version_key() {
   local name="${1##*/}" rest key build
   case "$name" in
     nvidia-*) rest="${name#nvidia-}" ;;
-    i915-sriov-*) rest="${name#i915-sriov-}" ;;
+    i915-sriov-*|xe-sriov-*) rest="${name#*-sriov-}" ;;
     *) return 1 ;;
   esac
   key="$(version_key "${rest%%-*}")" || return 1
@@ -118,7 +189,7 @@ package_dir() {
 package_matches() {
   local name="$1" source="$2" kernel="$3" series="${4:-}" want="${5:-latest}"
   local prefix rest version build
-  case "$source" in nvidia) prefix=nvidia ;; i915) prefix=i915-sriov ;; *) return 1 ;; esac
+  case "$source" in nvidia) prefix=nvidia ;; i915|xe) prefix="${source}-sriov" ;; *) return 1 ;; esac
   [[ "$name" == "$prefix-"* ]] || return 1
   rest="${name#"$prefix-"}"
   version="${rest%%-*}"
@@ -181,12 +252,14 @@ installed_package() {
 
 check_conflicting_plugins() {
   local source="$1" file name
+  # Both Intel packages own the same compatibility module and managed PF.
+  [ "$source" != xe ] || source=i915
   for file in /var/log/plugins/*.plg; do
     [ -f "$file" ] || continue
     name="${file##*/}"; name="${name,,}"; name="${name//_/-}"
     case "$source:$name" in
       nvidia:nvidia-driver.plg|nvidia:nvidia-driver-*.plg|\
-      i915:i915-sriov*.plg|i915:intel-sriov*.plg|i915:unraid-i915-sriov*.plg|\
+      i915:i915-sriov*.plg|i915:xe-sriov*.plg|i915:intel-sriov*.plg|i915:unraid-i915-sriov*.plg|\
       nvidia:vgpu-driver.plg|i915:vgpu-driver.plg)
         bilingual "ERROR: conflicting plugin ${file##*/}. Uninstall it and reboot before managing this driver here." \
           "错误：检测到冲突插件 ${file##*/}，请先卸载该插件并重启，再使用本插件管理此驱动。" >&2
@@ -212,7 +285,7 @@ package_kernel() {
   local name="${1##*/}" rest
   case "$name" in
     nvidia-*) rest="${name#nvidia-}" ;;
-    i915-sriov-*) rest="${name#i915-sriov-}" ;;
+    i915-sriov-*|xe-sriov-*) rest="${name#*-sriov-}" ;;
     *) return 1 ;;
   esac
   rest="${rest#*-}"; rest="${rest%-*}"
@@ -224,7 +297,7 @@ package_kernel() {
 # pkgtools is reading it or unlink a lock belonging to an active download.
 prune_cache() (
   local target="${1:-$KERNEL_V}" protected="${2##*/}" boot previous dir file kernel group source name key
-  local installed_nv installed_intel pinned selected selected_intel
+  local installed_nv installed_intel installed_xe pinned selected selected_intel pending_intel rollback_intel
   local -A keep=() newest=() pinned_newest=()
   mkdir -p "$PLGCFG" || return 1
   exec 5>"${PLGCFG}/.cache.lock"
@@ -234,8 +307,10 @@ prune_cache() (
   for kernel in "$KERNEL_V" "$target" "$boot" "$previous" "$(setting last_kernel)" "$(setting prepared_kernel)"; do
     if valid_kernel "$kernel"; then keep["$kernel"]=1; fi
   done
-  installed_nv="$(installed_package nvidia)"; installed_intel="$(installed_package i915)"
+  installed_nv="$(installed_package nvidia)"; installed_intel="$(installed_package i915)"; installed_xe="$(installed_package xe)"
   pinned="$(setting driver_version)"; selected="$(setting nvidia_package)"; selected_intel="$(setting intel_package)"
+  pending_intel="$(setting intel_pending_package)"
+  rollback_intel="$(setting intel_rollback_package)"
   for dir in "$PLGCFG/packages/"*; do
     [ -d "$dir" ] && [ ! -L "$dir" ] || continue
     [[ "${dir##*/}" =~ ^[0-9]+([.][0-9]+){1,2}$ ]] || continue
@@ -244,6 +319,7 @@ prune_cache() (
       name="${file##*/}"
       kernel="$(package_kernel "$name")" || continue
       source=i915; group=i915
+      if [[ "$name" == xe-sriov-* ]]; then source=xe; group=xe; fi
       if [[ "$name" == nvidia-* ]]; then
         source=nvidia; group="${name#nvidia-}"; group="nvidia-${group%%.*}"
       fi
@@ -262,13 +338,13 @@ prune_cache() (
         [ "$name" != "${pinned_newest[$key]:-}" ] || continue
       fi
       case "$name" in
-        "${newest[$key]}"|"$protected"|"$installed_nv"|"$installed_intel"|"$selected"|"$selected_intel") continue ;;
+        "${newest[$key]}"|"$protected"|"$installed_nv"|"$installed_intel"|"$installed_xe"|"$selected"|"$selected_intel"|"$pending_intel"|"$rollback_intel") continue ;;
       esac
       rm -f -- "$file" "$file.md5" "$file.sha256"
     done < <(printf '%s\n' "$dir/"*.txz | sort_by_version | tac)
     # Only remove known lock files from otherwise empty, obsolete directories.
     if ! compgen -G "$dir/*.txz" >/dev/null && [ -n "$boot" ]; then
-      rm -f -- "$dir"/.download-nvidia-{16,19}.lock "$dir/.download-i915-.lock"
+      rm -f -- "$dir"/.download-nvidia-{16,19}.lock "$dir/.download-i915-.lock" "$dir/.download-xe-.lock"
       rmdir -- "$dir" 2>/dev/null || true
     fi
   done
@@ -317,10 +393,10 @@ nvidia_active_series() {
 release_assets() {
   local source="$1" kernel="$2" series="${3:-}" want="${4:-latest}" max_time="${5:-25}" format="${6:-names}" repo data name headers digest
   valid_kernel "$kernel" && valid_version "$want" || return 1
-  case "$source" in nvidia) repo="$NVIDIA_REPO" ;; i915) repo="$I915_REPO" ;; *) return 1 ;; esac
+  case "$source" in nvidia) repo="$NVIDIA_REPO" ;; i915|xe) repo="$I915_REPO" ;; *) return 1 ;; esac
   headers="$(mktemp)" || return 1
   if ! data="$(curl -fsSL --dump-header "$headers" --connect-timeout 8 --max-time "$max_time" \
-      "https://api.github.com/repos/${repo}/releases/tags/${kernel}")"; then
+      "https://api.github.com/repos/${repo}/releases/tags/$(release_tag "$source" "$kernel")")"; then
     if grep -Eqi '^x-ratelimit-remaining:[[:space:]]*0[[:space:]]*$' "$headers"; then
       rm -f "$headers"
       bilingual 'ERROR: GitHub API rate limit reached. Wait for the limit to reset before retrying.' \

@@ -15,6 +15,7 @@ def main():
     box=Sandbox()
     process=None
     try:
+        (box.root/'etc/unraid-version').write_text('version="7.2.3"\n')
         box.settings(nvidia_installed='true',intel_installed='true',intel_vf_number='1',unlock='true',nvidia_unlock='true')
         box.installed(box.package())
         box.installed(box.package(source='i915'))
@@ -23,6 +24,9 @@ def main():
         (box.root/'sys/module/nvidia').mkdir(); (box.root/'sys/module/nvidia/version').write_text('535.309.01')
         (box.root/'sys/module/i915/parameters').mkdir(parents=True)
         (box.root/'sys/module/i915/parameters/max_vfs').write_text('7')
+        (box.root/'sys/module/i915/version').write_text('2026.08.12-sriov')
+        (box.root/'sys/bus/pci/drivers/i915').mkdir()
+        (box.root/'sys/bus/pci/devices/0000:03:00.0/driver').symlink_to('../../drivers/i915')
         box.state['processes']=['nvidia-vgpud','nvidia-vgpu-mgr']
         vm_name='Lab\'s "Windows 11" & 测试'
         box.state['vms']={vm_name:{'state':'running','inactive':f'<domain><devices><hostdev type="mdev"><source><address uuid="{UUID}"/></source></hostdev></devices></domain>','active':'<domain><devices/></domain>'}}

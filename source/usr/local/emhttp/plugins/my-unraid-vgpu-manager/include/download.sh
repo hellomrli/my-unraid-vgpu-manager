@@ -1,6 +1,6 @@
 #!/bin/bash
 # download.sh nvidia <16|19> [version] [--kernel release] [--refresh]
-# download.sh i915 [version] [--kernel release] [--refresh]
+# download.sh <i915|xe> [version] [--kernel release] [--refresh]
 # Installs may use verified local packages. --refresh always consults GitHub.
 set -o pipefail
 source "$(dirname "$(readlink -f "$0")")/common.sh"
@@ -13,8 +13,8 @@ case "$SOURCE" in
     SERIES="${1:-$(nvidia_series)}"
     case "$SERIES" in 16|19) ;; *) echo 'ERROR: expected series 16 or 19' >&2; exit 1 ;; esac
     [ $# -eq 0 ] || shift ;;
-  i915) ;;
-  *) echo 'ERROR: expected nvidia or i915' >&2; exit 1 ;;
+  i915|xe) ;;
+  *) echo 'ERROR: expected nvidia, i915 or xe' >&2; exit 1 ;;
 esac
 WANT=latest
 if [ $# -gt 0 ] && [[ "$1" != --* ]]; then WANT="$1"; shift; fi
@@ -82,8 +82,8 @@ if package_ok "${PKGDIR}/${PKG}" &&
   bilingual "The requested package is already downloaded and verified: $PKG" "所需驱动包已下载并通过校验：$PKG"
   finish_download "$PKG"; exit $?
 fi
-case "$SOURCE" in nvidia) REPO="$NVIDIA_REPO" ;; i915) REPO="$I915_REPO" ;; esac
-DL_URL="https://github.com/${REPO}/releases/download/${TARGET_KERNEL}"
+case "$SOURCE" in nvidia) REPO="$NVIDIA_REPO" ;; i915|xe) REPO="$I915_REPO" ;; esac
+DL_URL="https://github.com/${REPO}/releases/download/$(release_tag "$SOURCE" "$TARGET_KERNEL")"
 STAGE="$(mktemp -d "${PKGDIR}/.download.XXXXXX")" || exit 1
 trap 'rm -rf -- "$STAGE"' EXIT
 trap 'exit 1' HUP INT TERM

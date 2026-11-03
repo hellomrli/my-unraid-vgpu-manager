@@ -9,6 +9,7 @@ import struct
 import subprocess
 import tarfile
 import tempfile
+import uuid
 
 REPO = Path(__file__).resolve().parents[1]
 PLUGIN = 'my-unraid-vgpu-manager'
@@ -43,6 +44,7 @@ class Sandbox:
         self.locale('zh_CN')
         self.boot_image(NEXT_KERNEL)
         (self.root/'cmdline').write_text('BOOT_IMAGE=/bzimage initrd=/bzroot\n')
+        (self.root/'boot_id').write_text(str(uuid.uuid4())+'\n')
     def close(self): self.temp.cleanup()
     def write_state(self): (self.root/'state.json').write_text(json.dumps(self.state))
     def read_state(self): self.state = json.loads((self.root/'state.json').read_text()); return self.state
@@ -67,7 +69,7 @@ class Sandbox:
         (self.root/'boot/bzimage').write_bytes(data)
     def package(self, source='nvidia', kernel=KERNEL, version=None, build=1, remote=False, corrupt=False):
         version=version or ('535.309.01' if source=='nvidia' else '202608121')
-        prefix='nvidia' if source=='nvidia' else 'i915-sriov'
+        prefix='nvidia' if source=='nvidia' else source+'-sriov'
         name=f'{prefix}-{version}-{kernel}-{build}.txz'
         buf=io.BytesIO()
         with tarfile.open(fileobj=buf, mode='w:xz') as archive:
@@ -80,13 +82,29 @@ class Sandbox:
         (directory/(name+'.md5')).write_text(checksum+'  '+name+'\n')
         if remote:
             repo='my-nvidia-vgpu-driver' if source=='nvidia' else 'my-i915-sriov-driver'
-            self.state['releases'].setdefault(repo+'|'+kernel,[]).extend([name, name+'.md5'])
+            tag='xe-'+kernel if source=='xe' else kernel
+            self.state['releases'].setdefault(repo+'|'+tag,[]).extend([name, name+'.md5'])
             self.write_state()
         return name
     def installed(self, name):
         (self.root/'var/log/packages'/name.removesuffix('.txz')).write_text('installed\n')
         if name.startswith('nvidia-'): self.state['nvidia_disk_version']=name.split('-')[1]
+        elif name.startswith('xe-sriov-'): self.state['xe_disk_version']=name.removeprefix('xe-sriov-').split('-')[0]
         else: self.state['intel_disk_version']=name.removeprefix('i915-sriov-').split('-')[0]
+        self.write_state()
+    def reboot(self, kernel=None, clear_packages=True):
+        self.read_state()
+        (self.root/'boot_id').write_text(str(uuid.uuid4())+'\n')
+        shutil.rmtree(self.root/'sys/module'); (self.root/'sys/module').mkdir()
+        for dev in (self.root/'sys/bus/pci/devices').iterdir():
+            driver=dev/'driver'
+            if driver.is_symlink() and driver.name == 'driver' and driver.resolve().name in ('i915','xe'):
+                driver.unlink()
+        if clear_packages:
+            for db in ('var/log/packages','var/lib/pkgtools/packages'):
+                for pkg in (self.root/db).iterdir(): pkg.unlink()
+            for key in ('intel_disk_version','xe_disk_version'): self.state.pop(key,None)
+        if kernel: self.state['kernel']=kernel
         self.write_state()
     def gpu(self, vendor='nvidia', pci=None, device=None):
         pci=pci or ('0000:01:00.0' if vendor=='nvidia' else '0000:03:00.0')
@@ -135,7 +153,8 @@ class Sandbox:
             '--bind',str(self.root/'boot'),'/boot','--bind',str(self.root/'sys'),'/sys',
             '--bind',str(self.root/'var'),'/var','--bind',str(self.root/'etc'),'/etc',*extra,
             '--bind',str(self.root/'local'),'/usr/local','--bind',str(self.root/'bin'),'/usr/sbin',
-            '--dev','/dev','--proc','/proc','--ro-bind',str(self.root/'cmdline'),'/proc/cmdline','--chdir','/tmp/fixture',
+            '--dev','/dev','--proc','/proc','--ro-bind',str(self.root/'cmdline'),'/proc/cmdline',
+            '--ro-bind',str(self.root/'boot_id'),'/proc/sys/kernel/random/boot_id','--chdir','/tmp/fixture',
             '--setenv','PATH','/tmp/fixture/bin:'+str(Path(php).parent)+':/usr/bin:/bin',
             '--setenv','LC_ALL','C',*command]
     def run(self, *command, check=False, timeout=35):

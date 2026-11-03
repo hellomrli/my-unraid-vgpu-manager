@@ -2,7 +2,7 @@
 # rc.vgpu - runtime control for the my-unraid-vgpu-manager plugin
 # Unified management of:
 #   - NVIDIA vGPU (MERGED driver: vGPU + standard NVIDIA driver)
-#   - Intel i915 SR-IOV (strongtz i915-sriov-dkms based kernel modules)
+#   - Intel i915 (default) / experimental xe SR-IOV, as separate packages
 #
 # Drivers are NOT installed by default: the plugin page calls
 #   rc.vgpu nvidia_install / nvidia_uninstall / intel_install / intel_uninstall
@@ -22,8 +22,10 @@
 #   nvidia_update     - live-install a newer downloaded NVIDIA package
 #   nvidia_license    - (re)write gridd.conf from the page settings
 #   license_retry     - retry licensing once a local license server is up
-#   intel_install     - install a verified i915 SR-IOV package
-#   intel_uninstall   - remove the i915 package
+#   intel_install     - install a verified package for the selected Intel driver
+#   intel_switch      - queue a verified i915/xe package for the next boot
+#   intel_cancel_switch - cancel a switch before reboot, without runtime changes
+#   intel_uninstall   - remove the selected Intel package
 #   intel_set_vfs N   - set the VF count (hot)
 #   intel_bind        - bind all VFs to vfio-pci
 #
@@ -51,8 +53,8 @@ pkg_file() {
   find_package nvidia "$KERNEL_V" "$(nvidia_series)" latest
 }
 
-i915_pkg_file() {
-  find_package i915 "$KERNEL_V"
+intel_pkg_file() {
+  find_package "$(intel_driver)" "$KERNEL_V"
 }
 
 pkg_version() {
@@ -61,10 +63,10 @@ pkg_version() {
   [ -n "$p" ] && basename "$p" | cut -d '-' -f2
 }
 
-i915_pkg_version() {
+intel_pkg_version() {
   local p
-  p="$(i915_pkg_file)"
-  [ -n "$p" ] && basename "$p" | sed -E 's/^i915-sriov-([0-9.]+)-.*/\1/'
+  p="$(intel_pkg_file)"
+  [ -n "$p" ] && basename "$p" | sed -E 's/^(i915|xe)-sriov-([0-9.]+)-.*/\2/'
 }
 
 installed_version() {
@@ -75,8 +77,8 @@ loaded_version() {
   cat /sys/module/nvidia/version 2>/dev/null
 }
 
-i915_installed_version() {
-  modinfo -F version i915 2>/dev/null | head -1
+intel_installed_version() {
+  modinfo -F version "$(intel_driver)" 2>/dev/null | head -1
 }
 
 types_present() {
@@ -593,7 +595,7 @@ nvidia_cleanup_runtime() {
 }
 
 install_driver_package() (
-  local source="$1" pkg="$2" name old target key
+  local source="$1" pkg="$2" name old target key other opposite
   check_conflicting_plugins "$source" || return 1
   mkdir -p "$PLGCFG" || return 1
   exec 5>"${PLGCFG}/.cache.lock"
@@ -605,6 +607,17 @@ install_driver_package() (
   }
   tar -tJf "$pkg" >/dev/null 2>&1 || { log "ERROR: invalid package archive: $name"; return 1; }
   old="$(installed_package "$source")"
+  if valid_intel_driver "$source"; then
+    other=i915; [ "$source" != i915 ] || other=xe
+    opposite="$(installed_package "$other")"
+    if [ -n "$opposite" ]; then
+      [ -z "$old" ] || { log 'ERROR: both Intel packages are installed; reboot before repairing the driver selection'; return 1; }
+      [ ! -d "/sys/module/$other" ] && [ ! -d /sys/module/intel_sriov_compat ] || {
+        log 'ERROR: refusing to replace an Intel package while its driver/shared module is loaded; reboot first'; return 1;
+      }
+      old="$opposite"
+    fi
+  fi
   target="$pkg"
   [ -z "$old" ] || [ "$old" = "$name" ] || target="${old%.txz}%${pkg}"
   log "Installing driver package $name"
@@ -612,7 +625,7 @@ install_driver_package() (
     log "ERROR: package installation failed: $name"; return 1;
   }
   depmod -a "$KERNEL_V" || return 1
-  case "$source" in nvidia) key=nvidia_package ;; i915) key=intel_package ;; esac
+  case "$source" in nvidia) key=nvidia_package ;; i915|xe) key=intel_package ;; esac
   set_setting "$key" "$name"
 )
 
@@ -647,7 +660,7 @@ stop_update_workloads() {
     done
   else
     while IFS= read -r pci; do [ -z "$pci" ] || devices+=("$pci"); done < <(intel_pf_pci; intel_vfs_pci)
-    for pci in /sys/bus/pci/drivers/i915/????:??:??.?; do
+    for pci in "/sys/bus/pci/drivers/$(intel_driver)"/????:??:??.?; do
       [ ! -e "$pci" ] || devices+=("${pci##*/}")
     done
   fi
@@ -702,11 +715,23 @@ intel_has_gpu() {
   [ -n "$(intel_pf_pci)" ]
 }
 
-intel_pf_uses_xe() {
+intel_pf_driver() {
   local pf driver
   pf="$(intel_pf_pci)" || return 1
   driver="$(readlink "/sys/bus/pci/devices/$pf/driver" 2>/dev/null)"
-  [ "${driver##*/}" = xe ]
+  printf '%s\n' "${driver##*/}"
+}
+
+intel_other_gpus_bound() {
+  local driver="$1" pf dev
+  pf="$(intel_pf_pci)"
+  for dev in "/sys/bus/pci/drivers/$driver"/????:??:??.?; do
+    [ -e "$dev" ] || continue
+    [ "${dev##*/}" = "$pf" ] && continue
+    [ ! -L "$dev/physfn" ] || continue
+    return 0
+  done
+  return 1
 }
 
 intel_reboot_notice() {
@@ -772,7 +797,7 @@ intel_set_vfs() {
   [[ "$num" =~ ^[0-9]{1,2}$ ]] || { log "ERROR: invalid VF count"; return 1; }
   num="$((10#$num))"
   base="$(intel_sysfs_base)" || { log "ERROR: no Intel GPU found"; return 1; }
-  [ -w "$base/sriov_numvfs" ] || { log "ERROR: i915 is not exposing writable SR-IOV controls"; return 1; }
+  [ -w "$base/sriov_numvfs" ] || { log "ERROR: the Intel driver is not exposing writable SR-IOV controls"; return 1; }
   total="$(cat "$base/sriov_totalvfs")"
   [[ "$total" =~ ^[0-9]+$ ]] && [ "$num" -le "$total" ] || { log "ERROR: VF count exceeds hardware limit ($total)"; return 1; }
   current="$(cat "$base/sriov_numvfs")"
@@ -788,7 +813,10 @@ intel_set_vfs() {
     fi
   fi
   intel_bind_all_vfio || return 1
-  [ "$persist" != save ] || set_setting intel_vf_number "$num"
+  if [ "$persist" = save ]; then
+    set_setting intel_vf_number "$num" || return 1
+    if [ "$(setting intel_installed)" = true ]; then intel_write_config || return 1; fi
+  fi
   return 0
 }
 
@@ -841,102 +869,140 @@ intel_restore_go() {
 }
 
 intel_ccs_supported() {
-  modinfo -p i915 2>/dev/null | grep -q '^xelp_enable_ccs:'
+  modinfo -p "${1:-$(intel_driver)}" 2>/dev/null | grep -q '^xelp_enable_ccs:'
 }
 
-intel_write_config() {
-  local max_vfs ccs='' ccs_setting pf device xe_option=''
+intel_config_text() {
+  local driver="$1" max_vfs ccs='' pf device other
+  valid_intel_driver "$driver" || return 1
   max_vfs="$(setting intel_vf_number)"
   [ -n "$max_vfs" ] || max_vfs=7
-  # CCS0 is ON unless it was explicitly turned off: the i915 SR-IOV driver
-  # defaults to off since 2026.09.16, the plugin defaults to on.
-  ccs_setting="$(setting intel_xelp_enable_ccs)"
-  if intel_ccs_supported; then
-    if [ "$ccs_setting" = false ]; then ccs=' xelp_enable_ccs=0'; else ccs=' xelp_enable_ccs=1'; fi
-  elif [ "$ccs_setting" = true ]; then
-    log "WARNING: CCS setting saved, but this i915 module does not support xelp_enable_ccs. Upgrade the driver first."
+  [[ "$max_vfs" =~ ^[0-9]{1,2}$ ]] && [ "$((10#$max_vfs))" -le 63 ] || return 1
+  if intel_ccs_supported "$driver"; then
+    if [ "$(setting intel_xelp_enable_ccs)" = false ]; then ccs=' xelp_enable_ccs=0'; else ccs=' xelp_enable_ccs=1'; fi
   fi
   pf="$(intel_pf_pci)"
   device="$(cat "/sys/bus/pci/devices/$pf/device" 2>/dev/null)"; device="${device#0x}"
-  if [[ "$device" =~ ^[0-9a-fA-F]{4}$ ]]; then xe_option="options xe force_probe=!${device,,}"; fi
-  mkdir -p /boot/config/modprobe.d /etc/modprobe.d || return 1
-  cat > /boot/config/modprobe.d/my-unraid-vgpu-manager-i915.conf <<EOF
-# Managed by my-unraid-vgpu-manager
-blacklist i915
-${xe_option}
-options i915 enable_guc=3 max_vfs=${max_vfs}${ccs}
-EOF
-  cp /boot/config/modprobe.d/my-unraid-vgpu-manager-i915.conf /etc/modprobe.d/my-unraid-vgpu-manager-i915.conf
+  other=xe; [ "$driver" != xe ] || other=i915
+  printf '# Managed by my-unraid-vgpu-manager\nblacklist %s\n' "$driver"
+  # Blacklist only the selected module's automatic load until cache restore.
+  # The opposite driver remains available for other GPUs (never force_probe=*).
+  if [[ "$device" =~ ^[0-9a-fA-F]{4}$ ]]; then printf 'options %s force_probe=!%s\n' "$other" "${device,,}"; fi
+  if [ "$driver" = i915 ]; then
+    printf 'options i915 enable_guc=3 max_vfs=%s%s\n' "$max_vfs" "$ccs"
+  else
+    printf 'options xe max_vfs=%s%s' "$max_vfs" "$ccs"
+    if [[ "$device" =~ ^[0-9a-fA-F]{4}$ ]]; then printf ' force_probe=%s' "${device,,}"; fi
+    printf '\n'
+  fi
+}
+
+intel_save_config() {
+  local driver="$1" directory="$2" tmp file="$2/my-unraid-vgpu-manager-i915.conf"
+  mkdir -p "$directory" || return 1
+  tmp="$(mktemp "$directory/.intel.XXXXXX")" || return 1
+  intel_config_text "$driver" > "$tmp" || { rm -f "$tmp"; return 1; }
+  if cmp -s "$tmp" "$file"; then rm -f "$tmp"; return 0; fi
+  chmod 0644 "$tmp" && mv -f "$tmp" "$file"
+}
+
+intel_write_config() {
+  local runtime="${1:-$(intel_driver)}" next
+  next="$(intel_boot_driver)" || return 1
+  intel_save_config "$next" /boot/config/modprobe.d && intel_save_config "$runtime" /etc/modprobe.d
 }
 
 intel_set_ccs() {
   case "$1" in true|false) ;; *) log 'ERROR: invalid CCS setting'; return 1 ;; esac
   set_setting intel_xelp_enable_ccs "$1" || return 1
-  if [ "$(setting intel_installed)" = true ]; then intel_write_config || return 1; fi
-  log 'CCS setting saved. Reboot or reload the supported i915 driver to apply it; running VFs are unchanged.'
+  if intel_opted_in; then intel_write_config || return 1; fi
+  if ! intel_ccs_supported "$(intel_boot_driver)"; then
+    log 'WARNING: this driver does not support xelp_enable_ccs on disk; the preference is retained for supported modules.'
+  fi
+  log 'CCS setting saved. Reboot or reload the supported Intel driver to apply it; running VFs are unchanged.'
 }
 
 intel_load_module() {
-  check_conflicting_plugins i915 || return 1
-  local max_vfs
-  local -a ccs_args=()
-  max_vfs="$(setting intel_vf_number)"
-  [ -n "${max_vfs}" ] || max_vfs="7"
-  intel_write_config || return 1
-  if intel_ccs_supported; then
-    if [ "$(setting intel_xelp_enable_ccs)" = false ]; then
-      ccs_args=(xelp_enable_ccs=0)
-    else
-      ccs_args=(xelp_enable_ccs=1)
-    fi
-  fi
-
-  # the SR-IOV i915 build depends on the compat shim for intel_drm_shim_* symbols;
-  # it MUST be loaded before i915 or modprobe fails with "Unknown symbol".
-  if ! modprobe intel_sriov_compat 2>/dev/null; then
-    log "ERROR: intel_sriov_compat not found - run depmod -a and reinstall the i915-sriov package"
+  local driver="${1:-$(intel_driver)}" max_vfs owner pf device other
+  local -a args=()
+  valid_intel_driver "$driver" && check_conflicting_plugins "$driver" || return 1
+  if [ -n "$(installed_package i915)" ] && [ -n "$(installed_package xe)" ]; then
+    log 'ERROR: both Intel SR-IOV packages are installed. Reboot and restore only the selected driver before loading the shared compatibility module.'
     return 1
   fi
-
-  # if i915 is already loaded, make sure it is the SR-IOV build (the stock
-  # build lacks the max_vfs parameter); the stock build is unloaded first so
-  # the replacement can take over the GPU.
-  if lsmod | grep -q '^i915 '; then
-    if [ -f /sys/module/i915/parameters/max_vfs ]; then
-      log "i915 (SR-IOV) already loaded"
+  owner="$(intel_pf_driver)"
+  if [ -n "$owner" ] && [ "$owner" != "$driver" ]; then
+    log "ERROR: Intel PF is bound to $owner, not $driver. Check boot options and reboot; no other driver will be unloaded."
+    return 1
+  fi
+  max_vfs="$(setting intel_vf_number)"
+  [ -n "${max_vfs}" ] || max_vfs="7"
+  intel_write_config "$driver" || return 1
+  args=(max_vfs="$max_vfs")
+  if [ "$driver" = i915 ]; then args=(enable_guc=3 "${args[@]}")
+  else
+    pf="$(intel_pf_pci)"; device="$(cat "/sys/bus/pci/devices/$pf/device" 2>/dev/null)"; device="${device#0x}"
+    if [[ "$device" =~ ^[0-9a-fA-F]{4}$ ]]; then args+=(force_probe="${device,,}"); fi
+  fi
+  if intel_ccs_supported "$driver"; then
+    if [ "$(setting intel_xelp_enable_ccs)" = false ]; then
+      args+=(xelp_enable_ccs=0)
     else
-      log "Unloading built-in i915 (not SR-IOV) to load the SR-IOV build"
-      if ! modprobe -r i915 2>/dev/null; then
-        log "WARNING: could not unload built-in i915 (in use) - SR-IOV will apply after reboot"
+      args+=(xelp_enable_ccs=1)
+    fi
+  fi
+  other=xe; [ "$driver" != xe ] || other=i915
+  if [ -f "/sys/module/$other/parameters/max_vfs" ]; then
+    log 'ERROR: another Intel SR-IOV driver is loaded; reboot before loading the selected driver and its shared compatibility module'
+    return 1
+  fi
+  # Both community modules require this shim; never load it alongside the
+  # other community driver's potentially incompatible copy.
+  if ! modprobe intel_sriov_compat 2>/dev/null; then
+    log "ERROR: intel_sriov_compat not found - run depmod -a and reinstall the ${driver}-sriov package"
+    return 1
+  fi
+  if [ -d "/sys/module/$driver" ]; then
+    if [ -f "/sys/module/$driver/parameters/max_vfs" ]; then
+      log "$driver (SR-IOV) already loaded"
+    else
+      log "Unloading stock $driver (not SR-IOV) to load the SR-IOV build"
+      if intel_other_gpus_bound "$driver" || ! modprobe -r "$driver" 2>/dev/null; then
+        log "WARNING: could not unload stock $driver (in use or another GPU is bound) - reboot to apply SR-IOV"
         return 1
       fi
     fi
   fi
-
-  if [ ! -f /sys/module/i915/parameters/max_vfs ]; then
-    log "Loading i915 with enable_guc=3 max_vfs=${max_vfs}"
-    modprobe i915 enable_guc=3 max_vfs="${max_vfs}" "${ccs_args[@]}" 2>/dev/null || {
-      log "ERROR: modprobe i915 failed - is the i915-sriov package installed and depmod run?"
+  if [ ! -f "/sys/module/$driver/parameters/max_vfs" ]; then
+    log "Loading $driver with ${args[*]}"
+    modprobe "$driver" "${args[@]}" 2>/dev/null || {
+      log "ERROR: modprobe $driver failed - check the ${driver}-sriov package, GPU support and kernel log"
       return 1
     }
     sleep 3
   fi
+  [ -f "/sys/module/$driver/parameters/max_vfs" ] || { log "ERROR: loaded $driver is not the SR-IOV module"; return 1; }
   if intel_has_gpu; then intel_set_vfs "$max_vfs" nosave || return 1; fi
   return 0
 }
 
 intel_install_pkg() {
-  install_driver_package i915 "$1"
+  install_driver_package "${2:-$(intel_driver)}" "$1"
 }
 
 intel_do_ensure() {
+  local driver owner
+  if [ -n "$(intel_pending_driver)" ] && intel_switch_due; then intel_apply_switch; return $?; fi
+  [ "$(setting intel_installed)" = true ] || return 0
+  driver="$(intel_driver)" || return 1
   intel_has_gpu || { log "No Intel GPU detected; keeping the installed package for later use"; return 0; }
+  owner="$(intel_pf_driver)"
   if [ "$(setting intel_pending_reboot)" = true ] &&
-     { { [ -d /sys/module/i915 ] && [ ! -f /sys/module/i915/parameters/max_vfs ]; } || intel_pf_uses_xe; }; then
+     { { [ -d "/sys/module/$driver" ] && [ ! -f "/sys/module/$driver/parameters/max_vfs" ]; } || { [ -n "$owner" ] && [ "$owner" != "$driver" ]; }; }; then
     intel_reboot_notice
     return 0
   fi
-  intel_load_module || return 1
+  intel_load_module "$driver" || return 1
   if [ "$(setting intel_pending_reboot)" = true ]; then set_setting intel_pending_reboot false || return 1; fi
   return 0
 }
@@ -944,7 +1010,7 @@ intel_do_ensure() {
 do_start() {
   local result=0
   if [ "$(setting nvidia_installed)" = true ]; then nvidia_do_start || result=1; fi
-  if [ "$(setting intel_installed)" = true ]; then intel_do_ensure || result=1; fi
+  if intel_opted_in; then intel_do_ensure || result=1; fi
   return "$result"
 }
 
@@ -965,7 +1031,7 @@ do_update() {
   if [ "$(setting nvidia_installed)" = "true" ] && [ -n "$(pkg_file)" ]; then
     nvidia_do_update || nrc=1
   fi
-  if [ "$(setting intel_installed)" = "true" ] && intel_has_gpu && [ -n "$(i915_pkg_file)" ]; then
+  if [ "$(setting intel_installed)" = "true" ] && intel_has_gpu && [ -n "$(intel_pkg_file)" ]; then
     intel_do_install || irc=1
   fi
   [ ${nrc} -eq 0 ] && [ ${irc} -eq 0 ]
@@ -1007,27 +1073,146 @@ nvidia_do_uninstall() {
 }
 
 intel_unload_stack() {
+  local driver="${1:-$(intel_driver)}" owner other
+  valid_intel_driver "$driver" || return 1
+  owner="$(intel_pf_driver)"
+  if [ -n "$owner" ] && [ "$owner" != "$driver" ]; then
+    intel_vfs_idle || return 1
+    return 2
+  fi
+  if intel_other_gpus_bound "$driver"; then
+    log "ERROR: another GPU uses $driver; refusing a global module unload"
+    return 1
+  fi
+  other=xe; [ "$driver" != xe ] || other=i915
+  if [ -f "/sys/module/$other/parameters/max_vfs" ]; then
+    log 'ERROR: another SR-IOV driver uses the shared compatibility module; reboot before changing packages'
+    return 1
+  fi
   if [ -n "$(intel_vfs_total)" ]; then intel_set_vfs 0 nosave || return 1; fi
-  # Do not unload xe globally: other Intel GPUs may still need it.
-  if intel_pf_uses_xe; then return 2; fi
-  if [ -d /sys/module/i915 ]; then
-    if ! modprobe -r i915; then
-      if [ ! -f /sys/module/i915/parameters/max_vfs ]; then return 2; fi
+  if [ -d "/sys/module/$driver" ]; then
+    if ! modprobe -r "$driver"; then
+      if [ ! -f "/sys/module/$driver/parameters/max_vfs" ]; then return 2; fi
       log "ERROR: Intel GPU is in use; stop its VMs/containers before changing the driver"
       return 1
     fi
   fi
-  modprobe -r intel_sriov_compat 2>/dev/null || true
+  if [ -d /sys/module/intel_sriov_compat ]; then modprobe -r intel_sriov_compat || return 1; fi
+  return 0
+}
+
+intel_queue_switch() (
+  local driver="$1" pkg="$2" id active previous rollback next pf dev device
+  valid_intel_driver "$driver" && check_conflicting_plugins "$driver" || return 1
+  id="$(boot_id)" && active="$(intel_driver)" && previous="$(intel_boot_driver)" || return 1
+  pf="$(intel_pf_pci)"; device="$(cat "/sys/bus/pci/devices/$pf/device" 2>/dev/null)"
+  # force_probe addresses device IDs, not BDFs: identical PFs cannot be
+  # excluded independently without a separate per-device binding strategy.
+  if [ -n "$device" ]; then
+    for dev in /sys/bus/pci/devices/*; do
+      [ "${dev##*/}" != "$pf" ] && [ ! -L "$dev/physfn" ] || continue
+      if [ "$(cat "$dev/vendor" 2>/dev/null)" = 0x8086 ] && [ "$(cat "$dev/device" 2>/dev/null)" = "$device" ]; then
+        log 'ERROR: multiple Intel PFs share this device ID; force_probe cannot safely switch just one of them'
+        return 1
+      fi
+    done
+  fi
+  mkdir -p "$PLGCFG" || return 1
+  exec 5>"${PLGCFG}/.cache.lock"; flock -s 5 || return 1
+  package_matches "${pkg##*/}" "$driver" "$KERNEL_V" && package_ok "$pkg" && tar -tJf "$pkg" >/dev/null 2>&1 || {
+    log 'ERROR: the selected Intel driver needs a verified package for the running kernel'; return 1;
+  }
+  # Offline boot restoration reads the cache, not an arbitrary supplied path.
+  [ "$(readlink -f "$pkg")" = "$(package_dir "$KERNEL_V")/${pkg##*/}" ] || return 1
+  next="$(php "$EMHTTP/include/kernel.php" 2>/dev/null)"
+  if valid_kernel "$next" && [ "$next" != "$KERNEL_V" ]; then
+    find_package "$driver" "$next" >/dev/null || { log "ERROR: prepare $driver for the next boot kernel $next first"; return 1; }
+  fi
+  rollback="$(setting intel_rollback_package)"
+  if [ "$driver" != "$active" ] && [ "$(setting intel_installed)" = true ]; then
+    rollback="$(installed_package "$active")"
+    [ -n "$rollback" ] || rollback="$(setting intel_package)"
+    find_package "$active" "$KERNEL_V" >/dev/null || { log 'ERROR: keep a verified rollback package before switching'; return 1; }
+  fi
+  # Only the next-boot file changes here. Running modules, VFs, /etc modprobe
+  # settings and packages are deliberately untouched.
+  intel_save_config "$driver" /boot/config/modprobe.d || return 1
+  if ! set_settings intel_pending_driver "$driver" intel_pending_boot_id "$id" \
+      intel_pending_package "${pkg##*/}" intel_rollback_package "$rollback"; then
+    if intel_opted_in; then intel_save_config "$previous" /boot/config/modprobe.d
+    else rm -f /boot/config/modprobe.d/my-unraid-vgpu-manager-i915.conf; fi
+    return 1
+  fi
+  log "$(bilingual "Queued $driver for the next boot. No running GPU workloads were changed. Reboot to activate; i915 remains the recommended default, xe is experimental." \
+    "已准备 $driver，将在下次重启时生效；未改变正在运行的 GPU 工作负载。建议默认使用 i915，xe 为实验性驱动。")"
+)
+
+intel_clear_switch() {
+  set_settings intel_pending_driver '' intel_pending_boot_id '' intel_pending_package ''
+}
+
+intel_cancel_switch() {
+  local pending active
+  pending="$(intel_pending_driver)"; active="$(intel_driver)" || return 1
+  [ -n "$pending" ] || return 0
+  if [ "$(setting intel_pending_boot_id)" != "$(boot_id)" ]; then
+    log 'ERROR: this switch has passed its reboot boundary. Select the desired driver and reboot again instead of cancelling.'
+    return 1
+  fi
+  if [ "$(setting intel_installed)" = true ]; then intel_save_config "$active" /boot/config/modprobe.d || return 1
+  else rm -f /boot/config/modprobe.d/my-unraid-vgpu-manager-i915.conf || return 1; fi
+  if ! intel_clear_switch; then intel_save_config "$pending" /boot/config/modprobe.d; return 1; fi
+  log "$(bilingual 'Queued Intel driver switch cancelled. Running modules and VFs are unchanged.' '已取消待重启的 Intel 驱动切换，运行中的模块和 VF 保持不变。')"
+}
+
+intel_apply_switch() {
+  local driver pkg name owner other
+  intel_switch_due || return 0
+  driver="$(intel_pending_driver)"
+  check_conflicting_plugins "$driver" || return 1
+  if [ -n "$(installed_package i915)" ] && [ -n "$(installed_package xe)" ]; then
+    log 'ERROR: both Intel SR-IOV packages are installed; reboot into a clean root filesystem before switching'
+    return 1
+  fi
+  name="$(setting intel_pending_package)"
+  if package_matches "$name" "$driver" "$KERNEL_V"; then pkg="$(package_dir "$KERNEL_V")/$name"
+  else pkg="$(find_package "$driver" "$KERNEL_V")"; fi
+  package_matches "${pkg##*/}" "$driver" "$KERNEL_V" && package_ok "$pkg" || {
+    log "ERROR: queued $driver switch has no verified package for $KERNEL_V; selection is retained, prepare the package or queue i915 and reboot"
+    return 1
+  }
+  owner="$(intel_pf_driver)"; other=xe; [ "$driver" != xe ] || other=i915
+  if { [ -n "$owner" ] && [ "$owner" != "$driver" ]; } || [ -f "/sys/module/$other/parameters/max_vfs" ]; then
+    log "ERROR: another driver owns the Intel PF/shared module. Correct boot options and reboot; the queued switch was not applied."
+    return 1
+  fi
+  if [ "$(installed_package "$driver")" != "${pkg##*/}" ]; then
+    if [ -d "/sys/module/$driver" ] || [ -d /sys/module/intel_sriov_compat ]; then
+      log 'ERROR: Intel modules loaded before package restoration. Reboot without manual modprobe commands; no live package replacement was attempted.'
+      return 1
+    fi
+    intel_install_pkg "$pkg" "$driver" || return 1
+  fi
+  depmod -a "$KERNEL_V" || return 1
+  intel_write_config "$driver" || return 1
+  if intel_has_gpu; then intel_load_module "$driver" || return 1; fi
+  # Commit only after activation succeeds. On failure, retain the request and
+  # rollback cache; do not claim a successful switch or automatically hot-swap.
+  set_settings intel_driver "$driver" intel_installed true intel_pending_driver '' \
+    intel_pending_boot_id '' intel_pending_package '' intel_pending_reboot false || return 1
+  log "Intel $driver SR-IOV selection activated after reboot"
 }
 
 intel_do_install() {
-  local pkg="${1:-$(i915_pkg_file)}" current unload_result
-  check_conflicting_plugins i915 || return 1
-  package_matches "${pkg##*/}" i915 "$KERNEL_V" && package_ok "$pkg" || { log "ERROR: no verified Intel package for $KERNEL_V"; return 1; }
-  current="$(installed_package i915)"
+  local pkg="${1:-$(intel_pkg_file)}" current unload_result driver
+  driver="$(intel_driver)" || return 1
+  [ -z "$(intel_pending_driver)" ] || { log 'ERROR: cancel or complete the queued driver switch before installing/updating'; return 1; }
+  check_conflicting_plugins "$driver" || return 1
+  package_matches "${pkg##*/}" "$driver" "$KERNEL_V" && package_ok "$pkg" || { log "ERROR: no verified $driver package for $KERNEL_V"; return 1; }
+  current="$(installed_package "$driver")"
   if [ "$current" != "${pkg##*/}" ]; then
     if [ "${2:-}" = stop-workloads ]; then stop_update_workloads intel || return 1; fi
-    if intel_unload_stack; then :
+    if intel_unload_stack "$driver"; then :
     else
       unload_result=$?
       # Only a first install may stage a replacement for a busy stock driver.
@@ -1051,18 +1236,20 @@ intel_do_install() {
 }
 
 intel_do_uninstall() {
-  if [ "$(setting intel_pending_reboot)" != true ] || [ -f /sys/module/i915/parameters/max_vfs ]; then
-    intel_unload_stack || return 1
+  local pkg driver
+  driver="$(intel_driver)" || return 1
+  if [ -n "$(intel_pending_driver)" ]; then intel_cancel_switch || return 1; fi
+  if [ "$(setting intel_pending_reboot)" != true ] || [ -f "/sys/module/$driver/parameters/max_vfs" ]; then
+    intel_unload_stack "$driver" || return 1
   fi
-  local pkg
-  pkg="$(installed_package i915)"
+  pkg="$(installed_package "$driver")"
   if [ -n "$pkg" ]; then removepkg "${pkg%.txz}" || return 1; fi
   rm -f /boot/config/modprobe.d/my-unraid-vgpu-manager-i915.conf /etc/modprobe.d/my-unraid-vgpu-manager-i915.conf
   intel_restore_go || return 1
   depmod -a "$KERNEL_V" || return 1
   set_setting intel_installed false || return 1
   set_setting intel_pending_reboot false || return 1
-  log "Intel i915 SR-IOV driver disabled and uninstalled"
+  log "Intel $driver SR-IOV driver disabled and uninstalled"
   # Give the host its stock driver back instead of leaving the GPU unbound.
   if intel_has_gpu; then
     if modprobe i915 2>/dev/null; then log "Loaded the stock i915 driver"
@@ -1073,7 +1260,7 @@ intel_do_uninstall() {
 }
 
 do_restore() {
-  local pkg series result=0 want
+  local pkg series result=0 want driver
   record_running_kernel || return 1
   # Unraid rebuilds its root filesystem at boot. Restore only opted-in drivers
   # from verified packages for the running kernel, without network access.
@@ -1084,17 +1271,22 @@ do_restore() {
     if [ -n "$pkg" ]; then nvidia_install_pkg "$pkg" || result=1
     else log "ERROR: no verified NVIDIA $series.x package for $KERNEL_V; prepare it before upgrading Unraid"; result=1; fi
   fi
-  if [ "$(setting intel_installed)" = true ]; then
-    if ! check_conflicting_plugins i915; then result=1
+  if intel_switch_due; then
+    # ensure/starting activates this before VM autostart. Do not restore the
+    # old driver here, and never consume a pending switch on a plugin upgrade.
+    log 'Queued Intel driver will be restored and activated before array startup'
+  elif [ "$(setting intel_installed)" = true ]; then
+    driver="$(intel_driver)" || return 1
+    if ! check_conflicting_plugins "$driver"; then result=1
     else
-      if [ -z "$(installed_package i915)" ]; then
-        pkg="$(find_package i915 "$KERNEL_V")"
+      if [ -z "$(installed_package "$driver")" ]; then
+        pkg="$(find_package "$driver" "$KERNEL_V")"
         if [ -n "$pkg" ]; then intel_install_pkg "$pkg" || result=1
         else log "ERROR: no verified Intel package for $KERNEL_V; prepare it before upgrading Unraid"; result=1; fi
       fi
       # Migrate old global xe blacklists during plugin upgrades, even when the
       # running driver's package does not need reinstalling.
-      if [ -n "$(installed_package i915)" ]; then intel_write_config || result=1; fi
+      if [ -n "$(installed_package "$driver")" ]; then intel_write_config || result=1; fi
     fi
   fi
   return "$result"
@@ -1106,7 +1298,7 @@ do_ensure() {
   if [ "$(setting nvidia_installed)" = true ] && [ -n "$(installed_package nvidia)" ]; then
     nvidia_do_start offline || result=1
   fi
-  if [ "$(setting intel_installed)" = true ] && [ -n "$(installed_package i915)" ]; then
+  if intel_switch_due || { [ "$(setting intel_installed)" = true ] && [ -n "$(installed_package "$(intel_driver)")" ]; }; then
     intel_do_ensure || result=1
   fi
   return "$result"
@@ -1135,12 +1327,15 @@ do_status() {
     echo "  (none)"
   fi
   echo
-  echo "== Intel i915 SR-IOV =="
+  echo "== Intel SR-IOV =="
+  echo "Selected driver:   $(intel_driver)"
+  echo "Next boot driver:  $(intel_boot_driver)"
   if intel_has_gpu; then
     local pf
     pf="$(intel_pf_pci)"
     echo "Intel GPU (PF):    ${pf}"
-    echo "i915 driver:       $(i915_installed_version || echo not-installed)"
+    echo "Module on disk:    $(intel_installed_version || echo not-installed)"
+    echo "PF driver:         $(intel_pf_driver)"
     echo "SR-IOV support:    $(intel_sriov_supported && echo yes || echo no)"
     echo "VFs:               $(intel_vfs_num || echo 0) / $(intel_vfs_total || echo 0)"
     echo "VF devices:"
@@ -1181,6 +1376,8 @@ case "${1:-}" in
   nvidia_attach_vm)  nvidia_attach_vm "${2:-}" "${3:-}" ;;
   nvidia_detach_vm)  nvidia_detach_vm "${2:-}" "${3:-}" ;;
   intel_install)     intel_do_install "${2:-}" ;;
+  intel_switch)      intel_queue_switch "${2:-}" "${3:-}" ;;
+  intel_cancel_switch) intel_cancel_switch ;;
   intel_uninstall)   intel_do_uninstall ;;
   intel_ensure)      intel_do_ensure ;;
   intel_load)        intel_load_module ;;

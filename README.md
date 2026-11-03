@@ -1,210 +1,80 @@
-<p align="center">
-  <img src="./source/usr/local/emhttp/plugins/my-unraid-vgpu-manager/images/large.png" width="200" alt="my-unraid-vgpu-manager plugin icon">
-</p>
+<img src="./source/usr/local/emhttp/plugins/my-unraid-vgpu-manager/images/large.png" align="right" width="88" alt="Unraid vGPU Manager icon">
 
-<h1 align="center">my-unraid-vgpu-manager</h1>
+# my-unraid-vgpu-manager
 
-<p align="center">An Unraid plugin that manages NVIDIA vGPU and Intel i915 SR-IOV from one settings page: driver installation and updates, vGPU devices and VM binding, and driver pre-staging before an Unraid upgrade.</p>
+Manage NVIDIA vGPU and Intel SR-IOV on Unraid: download matching drivers, assign virtual GPUs to VMs, and restore them after reboot.
 
-<p align="center">
-  <a href="./README.md">English</a> | <a href="./README.zh-CN.md">简体中文</a>
-</p>
+[English](README.md) · [简体中文](README.zh-CN.md) · [User guide](docs/guide.md)
 
-<p align="center">
-  <a href="https://github.com/hellomrli/my-unraid-vgpu-manager/actions/workflows/check.yml"><img src="https://github.com/hellomrli/my-unraid-vgpu-manager/actions/workflows/check.yml/badge.svg" alt="Validation workflow status"></a>
-  <a href="https://unraid.net/"><img src="https://img.shields.io/badge/Unraid-7.2.3%2B-orange" alt="Requires Unraid 7.2.3 or newer"></a>
-</p>
+[![Validation](https://github.com/hellomrli/my-unraid-vgpu-manager/actions/workflows/check.yml/badge.svg)](https://github.com/hellomrli/my-unraid-vgpu-manager/actions/workflows/check.yml)
+[![License: GPL-3.0](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 
-## Why this plugin
+## Install the plugin
 
-Sharing a GPU between VMs and containers on Unraid normally means assembling kernel modules by hand, matching every driver build to the exact Unraid kernel release, and repeating the whole exercise after each OS update. This plugin keeps that work on one page: it installs and updates the driver packages, creates vGPU devices and binds them to VMs, and stages drivers for the next kernel before you reboot into it.
+**[Plugin installation link (.plg)](https://github.com/hellomrli/my-unraid-vgpu-manager/raw/master/my-unraid-vgpu-manager.plg)**
 
-NVIDIA vGPU and Intel i915 SR-IOV are separate stacks fed by separate driver repositories, so the plugin manages them independently: each has its own install state, its own update check, and its own cache. Only the drivers you explicitly enable are checked and prepared.
-
-## Highlights
-
-| Highlight | Why it matters |
-|---|---|
-| Both GPU stacks on one page | Drivers, NVIDIA GPU and Intel i915 SR-IOV tabs in a single Settings entry, and the interface follows Unraid's own language instead of a plugin-specific picker |
-| Merged NVIDIA driver | The package ships the vGPU host driver and the standard NVIDIA driver together, so the same card serves VMs and containers (`--gpus all`) rather than VMs only |
-| Two driver series, matched to hardware | 16.x LTS (535.309.01) for Pascal-era cards such as P4/P40/P100, 19.x LTS (580.178.05) for T4-and-newer; the plugin reads the installed model and offers the series that fits it |
-| Live driver updates | A newer package installs onto the running kernel without a reboot while no VM is holding a vGPU |
-| Upgrade pre-staging | Reads the kernel actually staged in `/boot/bzimage` and downloads only the drivers you enabled for it; it never installs packages or loads and unloads modules |
-| Boot restore without network | Enabled drivers and vGPU devices are restored at every boot from verified local packages, so a flash-drive-only boot still comes up with the GPU ready |
-
-## Architecture
+Open **Plugins → Install Plugin** in Unraid and paste this URL. Use the **copy button** at the top right of the code block:
 
 ```text
-┌────────────────────────────────────────────────────────────────────┐
-│  Unraid WebUI   Settings -> Unraid vGPU Manager                    │
-│  Drivers  |  NVIDIA GPU  |  Intel i915 SR-IOV                      │
-└───────────────┬────────────────────────────────────────────────────┘
-               │
-               ▼
-┌────────────────────────────────────────────────────────────────────┐
-│  PHP   web.php - actions.php - kernel.php                          │
-└───────────────┬────────────────────────────────────────────────────┘
-               │
-               ▼
-┌────────────────────────────────────────────────────────────────────┐
-│  Shell   rc.vgpu - common.sh - download.sh                         │
-│          update-check.sh - upgrade-check.sh                        │
-└───────────────┬────────────────────────────────────┬───────────────┘
-               │                                    │
-               ▼                                    ▼
-┌───────────────────────────┐      ┌─────────────────────────────────┐
-│  /boot/config/plugins/    │      │  GitHub Release assets          │
-│    my-unraid-vgpu-manager/│      │  my-nvidia-vgpu-driver          │
-│    packages/<kernel>/     │      │  my-i915-sriov-driver builds    │
-└───────────────┬───────────┘      └─────────────────────────────────┘
-               │
-               ▼
-┌────────────────────────────────────────────────────────────────────┐
-│  Kernel modules and vGPU devices -> VMs, Docker (--gpus all)       │
-└────────────────────────────────────────────────────────────────────┘
-```
-
-The page renders the interface, `kernel.php` reads the kernel staged for the next boot, and the shell layer owns everything that touches packages and modules. Packages live on the flash drive under `/boot/config/plugins/my-unraid-vgpu-manager/packages/<kernel>/`, which is what makes both boot restore and upgrade pre-staging work without re-downloading.
-
-## Usage example
-
-Installing the plugin does not install any driver. A full first run, from the Unraid WebUI:
-
-```text
-# 1. Plugins -> Install Plugin, and paste the plugin URL
-https://github.com/hellomrli/my-unraid-vgpu-manager/raw/master/my-unraid-vgpu-manager.plg
-
-# 2. Settings -> Unraid vGPU Manager -> Drivers
-#    Pick the series that matches your card and install the NVIDIA driver.
-#    The first install can reuse an already verified local package.
-
-# 3. Drivers tab -> enable the daily update check if you want version notices.
-#    Checking reads Release metadata only; it downloads and installs nothing.
-
-# 4. NVIDIA GPU tab -> License & Modules
-#    Set the license server, port and FeatureType, then save.
-
-# 5. NVIDIA GPU tab -> pick a card and a profile, generate a UUID, add the vGPU.
-
-# 6. NVIDIA GPU tab -> bind the device to a target VM.
-#    The binding is persistent: shut the VM down and start it again
-#    so the device is attached at a real cold boot.
-```
-
-Expected result: the vGPU appears in the device list with its profile and UUID, the VM starts with the device attached, and both survive a reboot because the configuration is stored on the flash drive.
-
-Two behaviours are worth knowing before you start:
-
-- A device that a running VM still holds keeps showing as occupied. Detach it from inside the VM's configuration, then shut the VM down; an attached device cannot be removed or stopped.
-- To switch the NVIDIA driver series, stop every VM and container using the GPU, select the target series under License & Modules, and use the switch button there. A plain driver update stays on the installed series.
-
-## Quick install
-
-Requires Unraid 7.2.3 or newer and a supported GPU. Install the plugin from the Unraid WebUI:
-
-```text
-Plugins -> Install Plugin
 https://github.com/hellomrli/my-unraid-vgpu-manager/raw/master/my-unraid-vgpu-manager.plg
 ```
 
-Updating and removing the plugin use the same Unraid plugin manager. Removal deletes the interface, the update hooks and the scheduled checks, and calls `rc.vgpu stop` without force-stopping a running VM; your settings and the driver caches stay on the flash drive, and a reboot unloads the drivers.
+Requires **Unraid 7.2.3 or newer** and a compatible GPU. Unraid downloads the matching plugin package through this `.plg`; future updates use the same plugin manager. **No plugin GitHub Release or manual package download is needed.** Installing the plugin does not install a GPU driver.
 
-Before installing a driver, uninstall other plugins managing the same stack and reboot. The manager rejects known conflicts such as Nvidia-Driver, i915-sriov and the old vgpu-driver plugin; monitoring-only plugins such as intel-gpu-top are not conflicts.
+> [!IMPORTANT]
+> **Intel SR-IOV defaults to i915, the recommended choice. xe is an optional experimental driver; switching requires a reboot.** Plugin updates never silently switch you to xe.
 
 ## Quick start
 
-Open **Settings → Unraid vGPU Manager**. The page has three tabs:
+Open **Settings → Unraid vGPU Manager**. Before installing a driver, remove other plugins managing the same driver stack and reboot; monitoring-only plugins such as intel-gpu-top are not conflicts.
 
-| Tab | What it covers |
+| Your GPU | First steps |
 |---|---|
-| Drivers | Driver status, available versions and update buttons, install and uninstall, and the scheduled check settings |
-| NVIDIA GPU | Driver series, licensing, modules, unlock, vGPU profiles, device management and VM binding |
-| Intel i915 SR-IOV | VF count, passthrough state and the boot parameters to add |
+| Intel with SR-IOV support | In **Drivers**, keep **i915 (recommended)** and install. Follow the Intel tab's IOMMU/boot guidance and reboot when requested. Set the VF count, then pass a **VF**, never the PF, through to a VM. |
+| NVIDIA with vGPU support | In **Drivers**, select the supported series and install. In **NVIDIA GPU**, configure licensing, create a vGPU from a profile and bind it to a VM. Cold-start the VM to attach it. |
 
-For NVIDIA, the shortest path is: install a driver on the Drivers tab, set the license server under License & Modules, add a vGPU from the profile list, then bind it to a VM. For Intel, install the driver, set the VF count, add the parameters shown on the page to your active Unraid boot entry, and pass a **VF** (never the PF) through to the VM.
+Expected result: the selected driver and virtual GPU devices appear on the page, and enabled devices are restored from verified cached packages at boot. Guest operating systems still need compatible GPU drivers.
 
-Only `intel_iommu=on iommu=pt` belongs in the recommended boot options. The plugin manages `i915.enable_guc`, `i915.max_vfs` and `i915.xelp_enable_ccs` through modprobe configuration. Remove old copies of those options and remove `xe` from global boot blacklists, then reboot; the Intel tab warns when conflicting options are detected. Only the managed Intel device ID is excluded from xe probing, leaving other xe GPUs available. If the stock i915 or xe driver cannot be released on a **first install**, the package and configuration are saved for the next boot and the page requests a reboot. No console is forcibly detached; updates to an enabled SR-IOV stack still abort when it is busy.
+![Drivers tab showing the i915 default and experimental xe selector, using test data](docs/assets/drivers-en.png)
 
-Driver status compares the installed version with the available one and shows both build numbers. Enable the daily check to look for updates when the page opens, or press the check button to query immediately; a check that does not answer within 35 seconds is reported as timed out and the button comes back so you can retry.
+*Interface preview from the isolated test environment, not a claim of hardware certification.*
 
-## Driver updates and CCS0
+## Choosing i915 or xe
 
-After you confirm **Update driver**, the plugin downloads and verifies the package before identifying consumers from live VM mdev/PCI devices and Docker GPU requests, device mappings and mounts. It requests a normal VM shutdown and aborts after roughly two minutes without forcing power off. Containers use `docker stop --time 30` (Docker may kill them after that timeout). Unidentified host processes can still block module removal; the plugin does not kill them or stop the entire Docker/libvirt service. **Restart stopped VMs and containers manually afterwards**, including checking the log after a failed update. Scheduled checks and kernel pre-staging do not stop workloads.
-
-The Intel tab has a separate **CCS0 switch**, **enabled by default**: the i915 SR-IOV driver itself defaults to off since `2026.09.16`, and the plugin enables `xelp_enable_ccs=1` unless you explicitly disable it here. Saving updates the plugin's modprobe configuration, without changing VF counts or stopping VMs. **Reboot the host or successfully reload a supported driver to apply it.** Unsupported older drivers do not receive the unknown parameter and show an upgrade warning. Remove manually configured `i915.xelp_enable_ccs` boot options instead of maintaining a second copy.
-
-## Driver series and hardware
-
-| Series | Package version | When to choose it |
-|---|---|---|
-| 16.x | 535.309.01 | Pascal cards (P4, P40, P100 and similar) and any device that needs `vgpu_unlock`; the 16.x line is past end of maintenance |
-| 19.x | 580.178.05 | Newer GPUs that this branch supports; on a fresh install where the hardware appears in both lists, 19.x is the recommendation |
-
-The hardware hint comes from the PCI IDs in each branch's `vgpuConfig.xml`. It is not an NVIDIA certification or a record of testing on real hardware: newer architectures may additionally require NVIDIA SR-IOV to be enabled first, and this plugin does not run `sriov-manage` for you. Verified hardware in this repository is limited to a Tesla P4; other cards should not be assumed to work because that one does.
-
-The consumer-card unlock kernel patch is built into the 16.x series only, because its config magic is 535-specific. Upstream `vgpu_unlock` covers Maxwell, Pascal and Turing (GTX 9/10 and RTX 20 series), treats RTX 30 as experimental, and does not support RTX 40. Cards with native vGPU support, such as the P4, never need the unlock.
-
-## Pre-staging drivers for an Unraid upgrade
-
-After Unraid writes a new OS to the flash drive, the plugin reads the kernel version actually staged in `/boot/bzimage` and compares it with the running `uname -r`. The OS-update hook checks immediately and a five-minute fallback covers other update paths. The preparation options are reached from the Unraid update notification, not from the normal plugin page.
-
-| What you have enabled | What an Unraid upgrade does |
+| Driver | Recommendation |
 |---|---|
-| No GPU driver | Queries and downloads nothing; install a driver manually when you want one |
-| NVIDIA vGPU only | Checks and downloads the NVIDIA driver for the new kernel; Intel takes no part |
-| Intel i915 SR-IOV only | Checks and downloads the Intel driver for the new kernel; NVIDIA takes no part |
-| Both | Prepares both independently, and reports ready only after everything passes verification |
-| Missing package, network error or checksum failure | Reports not ready and keeps the existing packages so you can inspect or roll back |
+| **i915** | **Default and recommended.** Keeps the project's existing Intel SR-IOV path. An upstream xe update is not a reason to switch a working installation. |
+| **xe** | **Experimental, opt-in.** A newer Intel driver architecture, provided as a separate package for compatibility testing and evaluation. |
 
-Pre-staging keeps the installed NVIDIA series, so a 535.x or 16.x install does not become 580.x or 19.x just because Unraid was upgraded, and a pinned driver version is respected rather than silently replaced. It only stores files: the running kernel keeps its driver and nothing reboots.
+Newer does not prove faster or more stable in your Unraid SR-IOV workload. Both packages use the experimental [strongtz community port](https://github.com/strongtz/i915-sriov-dkms), not an Intel production-support guarantee. The port currently warns that its **xe module does not support Meteor Lake or Lunar Lake**; this is not a statement about mainline xe or guaranteed i915 SR-IOV support on those platforms.
 
-Boot restoration does not contact the license server: it reuses a saved token for the same endpoint when available. Missing tokens are requested in the background after the array starts, so a license server running in a local VM or container does not delay array startup.
+To switch, use **Drivers → Intel SR-IOV driver**:
 
-## Cache and package sources
+1. Select the target driver and confirm. The plugin downloads and verifies its separate package, preserves rollback cache and prepares next-boot settings. It does not stop workloads, replace live packages or change running VFs.
+2. Disable GPU VM/container autostart before testing xe, then reboot. Activation uses the local cache before array startup. A failed driver start does **not** guarantee that Unraid cancels workload autostart.
+3. Check the actual loaded driver and VF passthrough before restarting GPU workloads. You can cancel a queued switch before reboot; after a failed reboot, select i915 and reboot again to roll back.
 
-Both driver repositories publish one Release tag per full kernel version, for example `6.18.47-Unraid`:
+**Do not manually install both Intel packages:** they share a compatibility module and must be mutually exclusive. See the [switching and recovery details](docs/guide.md#choosing-i915-or-xe) for boot-option conflicts, multiple GPUs and logs.
 
-- NVIDIA: [hellomrli/my-nvidia-vgpu-driver](https://github.com/hellomrli/my-nvidia-vgpu-driver)
-- Intel: [hellomrli/my-i915-sriov-driver](https://github.com/hellomrli/my-i915-sriov-driver), built from [strongtz/i915-sriov-dkms](https://github.com/strongtz/i915-sriov-dkms)
+## What it manages
 
-Packages are cached at `/boot/config/plugins/my-unraid-vgpu-manager/packages/<kernel>/`. If you place a package there by hand, add its `.txz.md5` next to it (a `.txz.sha256`, if present, must match too); the plugin verifies the file by content and does not execute or trust paths taken from the checksum file. A package name has to match both the kernel and the driver series.
+- **Independent GPU stacks:** NVIDIA and the selected Intel driver have separate installation, update-check and package-cache state.
+- **Kernel-specific downloads:** an Unraid update stages the enabled drivers for the kernel actually written to `/boot/bzimage`, without changing the running driver.
+- **Offline boot restoration:** verified cached packages restore enabled drivers and devices before array startup.
+- **Driver updates on request:** scheduled checks only report availability. An explicit update can stop affected GPU workloads; restart them manually afterwards.
+- **NVIDIA series and Intel CCS0:** hardware-aware NVIDIA series selection and a separate CCS0 preference for Intel modules that support it.
 
-Online downloads verify GitHub's upload-time SHA-256 asset digest and save it as `.txz.sha256` for offline restoration. Older releases without a digest retain MD5 and optional SHA-256 sidecar verification. Explicit refresh checks the API digest before reusing a same-named cached package. API quota exhaustion is reported separately from other network failures. These checks detect content changes; they are not publisher signatures.
+The Intel driver repository maintains the deduplicated kernels used by the current official stable release, current public beta/RC, and ich777's latest preparation kernel. Older assets remain available, but kernels outside those sources stop receiving updates. [Kernel coverage and Intel packages](https://github.com/hellomrli/my-i915-sriov-driver#内核覆盖与更新).
 
-Successful downloads, installations and explicit local restores prune obsolete cache entries. Retained kernels include the running kernel, the staged boot kernel, the previously recorded running kernel, `/boot/previous/bzimage` when readable, and the most recently prepared kernel. Each retained kernel keeps the newest verified build per driver and NVIDIA series, plus installed packages, the selected pinned version and the package just requested. Active downloads/installations hold a cache lock; failed updates do not delete the installed package. If the boot kernel cannot be read, cross-kernel pruning is skipped. Unknown files are not deleted. Boot-time `ensure` does not run this cleanup, avoiding extra USB reads on the array-start path.
+## Documentation and support
 
-The plugin itself uses Slackware-compatible names such as `my-unraid-vgpu-manager-2026.10.23-x86_64-1.txz`, verified by both MD5 and SHA-256 in the manifest. Installation migrates exact legacy package records and removes old plugin archives only after the new payload installs successfully. The existing `raw/master` distribution URL remains unchanged pending a coordinated Release migration.
-
-If no package exists yet for a new kernel, build one in the driver repository. The plugin will not install a package built for a different kernel, and it does not report a failed download as an updated driver.
-
-## Development and verification
-
-```bash
-# Rebuild the package and refresh the .plg MD5/SHA-256 after source/version changes
-python3 scripts/build-plugin.py
-
-# PHP / Bash / JS / JSON / XML, isolated lifecycle regressions, package consistency
-./scripts/check.sh
-
-# Browser interaction checks (needs Chrome or Chromium)
-npm ci
-python3 tests/browser_server.py
-```
-
-The checks need PHP CLI with SimpleXML, Python 3.9+, Node.js, ShellCheck, jq, bubblewrap and GNU coreutils, matching what Unraid ships. Regression tests run against an isolated filesystem with no network and no host GPU, and never invoke the host's driver management commands. The browser suite drives the same isolated filesystem over a local HTTP server and covers forms, the Unraid language handover, driver version notices, the notification entry point, the mobile layout, and the unresponsive, retry-after-timeout and late-response paths.
-
-CI runs the same commands on `ubuntu-24.04` and uploads the interface screenshots it captures as a workflow artifact.
-
-## Project links
-
-| Topic | Link |
+| Need | Read |
 |---|---|
-| Fix history and verification boundaries | [docs/REVIEW.md](docs/REVIEW.md) |
-| Plugin manifest and changelog | [my-unraid-vgpu-manager.plg](my-unraid-vgpu-manager.plg) |
-| NVIDIA driver packages | [hellomrli/my-nvidia-vgpu-driver](https://github.com/hellomrli/my-nvidia-vgpu-driver) |
-| Intel driver packages | [hellomrli/my-i915-sriov-driver](https://github.com/hellomrli/my-i915-sriov-driver) |
-| Intel SR-IOV upstream | [strongtz/i915-sriov-dkms](https://github.com/strongtz/i915-sriov-dkms) |
+| Setup, updates, removal and recovery | [User guide](docs/guide.md) |
+| NVIDIA series and hardware limitations | [Hardware guide](docs/guide.md#driver-series-and-hardware) |
+| Build or verify a plugin change | [Development and verification](docs/guide.md#development-and-verification) |
+| Report a problem | [Issues](https://github.com/hellomrli/my-unraid-vgpu-manager/issues); include Unraid/kernel versions, GPU model and relevant logs, with secrets removed |
+| Plugin changes and package checksums | [Plugin manifest](my-unraid-vgpu-manager.plg) |
+| Driver sources | [Intel](https://github.com/hellomrli/my-i915-sriov-driver) · [NVIDIA](https://github.com/hellomrli/my-nvidia-vgpu-driver) |
 
-## License
-
-Released under the [GNU General Public License v3.0](./LICENSE).
+[GPL-3.0](LICENSE). Automated tests cover packaging, isolated lifecycle behavior and the bilingual interface; they do not replace validation on your Unraid hardware.

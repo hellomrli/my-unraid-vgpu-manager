@@ -19,6 +19,9 @@ AUTO_DOWNLOAD=true
 
 NV="$(setting nvidia_installed)"
 INTEL="$(setting intel_installed)"
+if intel_opted_in; then INTEL=true; fi
+INTEL_DRIVER="$(intel_boot_driver)" || exit 1
+INTEL_PENDING="$(intel_pending_driver)" || exit 1
 # A cached package or detected GPU is not opt-in. Do not even query GitHub.
 if [ "$NV" != true ] && [ "$INTEL" != true ]; then
   rm -f "$STATE"
@@ -57,7 +60,7 @@ SERIES="$(nvidia_active_series)"
 WANT="$(setting driver_version)"
 [ -n "$WANT" ] || WANT=latest
 valid_version "$WANT" || exit 1
-KEY="$(printf '%s|%s|%s|%s|%s|%s' "$TARGET" "$NV" "$INTEL" "$SERIES" "$WANT" "$AUTO_DOWNLOAD" | sha256sum | cut -d' ' -f1)"
+KEY="$(printf '%s|' "$TARGET" "$NV" "$INTEL" "$SERIES" "$WANT" "$AUTO_DOWNLOAD" "$INTEL_DRIVER" "$INTEL_PENDING" | sha256sum | cut -d' ' -f1)"
 NOW="$(date +%s)"
 if [ "$MODE" = auto ] && [ -s "$STATE" ]; then
   OLD_KEY="$(jq -r '.key // empty' "$STATE" 2>/dev/null)"
@@ -83,9 +86,11 @@ save_state() {
   jq -n --arg key "$KEY" --arg kernel "$TARGET" --arg current "$KERNEL_V" \
     --arg status "$1" --arg nvidia "$NSTATUS" --arg intel "$ISTATUS" \
     --arg nvidia_package "$NPKG" --arg intel_package "$IPKG" --arg series "$SERIES" --arg wanted_version "$WANT" \
+    --arg intel_driver "$INTEL_DRIVER" --arg intel_pending "$INTEL_PENDING" \
     --argjson checked_at "$(date +%s)" \
     '{key:$key,kernel:$kernel,current_kernel:$current,status:$status,nvidia:$nvidia,intel:$intel,
-      nvidia_package:$nvidia_package,intel_package:$intel_package,series:$series,wanted_version:$wanted_version,checked_at:$checked_at}' > "$tmp" &&
+      nvidia_package:$nvidia_package,intel_package:$intel_package,series:$series,wanted_version:$wanted_version,
+      intel_driver:$intel_driver,intel_pending:$intel_pending,checked_at:$checked_at}' > "$tmp" &&
     chmod 0644 "$tmp" && mv -f "$tmp" "$STATE"
 }
 if [ "$AUTO_DOWNLOAD" = true ]; then
@@ -107,13 +112,17 @@ if [ "$NV" = true ] && [ "$(setting nvidia_installed)" = true ]; then
 else
   NSTATUS=disabled
 fi
-if [ "$INTEL" = true ] && [ "$(setting intel_installed)" = true ]; then
-  if { [ "$AUTO_DOWNLOAD" = false ] || "$EMHTTP/include/download.sh" i915 latest --kernel "$TARGET"; } &&
-     IPKG="$(find_package i915 "$TARGET")"; then
+if [ "$INTEL" = true ] && intel_opted_in; then
+  if { [ "$AUTO_DOWNLOAD" = false ] || "$EMHTTP/include/download.sh" "$INTEL_DRIVER" latest --kernel "$TARGET"; } &&
+     IPKG="$(find_package "$INTEL_DRIVER" "$TARGET")"; then
     IPKG="${IPKG##*/}"; ISTATUS=ready
   else ISTATUS=missing; RESULT=1; fi
 else
   ISTATUS=disabled
+fi
+# A concurrent selection change invalidates the earlier readiness snapshot.
+if [ "$INTEL_DRIVER" != "$(intel_boot_driver)" ] || [ "$INTEL_PENDING" != "$(intel_pending_driver)" ]; then
+  ISTATUS=missing; IPKG=''; RESULT=1
 fi
 if [ "$RESULT" = 0 ]; then
   save_state ready || exit 1

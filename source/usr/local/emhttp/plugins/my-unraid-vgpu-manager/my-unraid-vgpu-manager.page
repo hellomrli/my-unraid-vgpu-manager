@@ -8,13 +8,16 @@ $kernel = vgpu_command_text(['uname', '-r']);
 $unraid_v = (@parse_ini_file('/etc/unraid-version') ?: [])['version'] ?? '';
 $nvidia_inst = vgpu_setting('nvidia_installed', 'false') === 'true';
 $intel_inst = vgpu_setting('intel_installed', 'false') === 'true';
+$intel_driver = vgpu_intel_driver();
+$intel_pending = vgpu_intel_pending_driver();
+$intel_next_driver = $intel_pending ?: $intel_driver;
+$intel_opted_in = $intel_inst || $intel_pending !== '';
+$intel_can_cancel = $intel_pending !== '' && vgpu_setting('intel_pending_boot_id') === vgpu_read('/proc/sys/kernel/random/boot_id');
 $module_info = vgpu_run(['modinfo', '-F', 'version', 'nvidia']);
 $installed_v = $module_info['code'] === 0 ? $module_info['output'] : '';
 $loaded_v = vgpu_read('/sys/module/nvidia/version');
-$i915_installed_v = vgpu_run(['modinfo', '-F', 'version', 'i915']);
-$i915_installed_v = $i915_installed_v['code'] === 0 ? $i915_installed_v['output'] : '';
-$i915_loaded = is_dir('/sys/module/i915');
-$i915_sriov = is_file('/sys/module/i915/parameters/max_vfs');
+$intel_installed_v = vgpu_run(['modinfo', '-F', 'version', $intel_driver]);
+$intel_installed_v = $intel_installed_v['code'] === 0 ? $intel_installed_v['output'] : '';
 $mgr_running = vgpu_run(['pgrep', '-x', 'nvidia-vgpu-mgr'])['code'] === 0;
 $gpus = []; $gpu_ids = []; $gpu_types = []; $types_present = false; $intel_pf = ''; $intel_sriov_pf = '';
 foreach (glob('/sys/bus/pci/devices/*') ?: [] as $dev) {
@@ -62,6 +65,10 @@ foreach ($vm_list as $vm) {
 }
 $devices = vgpu_devices();
 $intel_base = $intel_pf ? "/sys/bus/pci/devices/$intel_pf" : '';
+$intel_pf_driver = $intel_base ? basename((string)@readlink("$intel_base/driver")) : '';
+$intel_loaded = in_array($intel_pf_driver, ['i915','xe'], true) && is_dir("/sys/module/$intel_pf_driver");
+$intel_sriov = $intel_loaded && is_file("/sys/module/$intel_pf_driver/parameters/max_vfs");
+$intel_loaded_v = $intel_loaded ? $intel_pf_driver.' '.vgpu_read("/sys/module/$intel_pf_driver/version") : '';
 $intel_vfs = $intel_base ? vgpu_read("$intel_base/sriov_numvfs") : '';
 $intel_total = $intel_base ? vgpu_read("$intel_base/sriov_totalvfs") : '';
 $vf_list = [];
@@ -81,7 +88,9 @@ $upgrade = json_decode((string)@file_get_contents('/var/tmp/my-unraid-vgpu-manag
 if ($pending_kernel !== '' && ($upgrade['kernel'] ?? '') !== $pending_kernel) $upgrade = [];
 // An old readiness result cannot cover a newly enabled driver or another series.
 if ($upgrade && (($nvidia_inst !== (($upgrade['nvidia'] ?? 'disabled') !== 'disabled')) ||
-    ($intel_inst !== (($upgrade['intel'] ?? 'disabled') !== 'disabled')) ||
+    ($intel_opted_in !== (($upgrade['intel'] ?? 'disabled') !== 'disabled')) ||
+    ($intel_opted_in && ($upgrade['intel_driver'] ?? 'i915') !== $intel_next_driver) ||
+    ($intel_opted_in && ($upgrade['intel_pending'] ?? '') !== $intel_pending) ||
     ($nvidia_inst && $series_inst && ($upgrade['series'] ?? '') !== $series_inst) ||
     ($nvidia_inst && ($upgrade['wanted_version'] ?? 'latest') !== vgpu_setting('driver_version', 'latest')))) $upgrade = [];
 if (($upgrade['status'] ?? '') === 'ready') {
@@ -94,8 +103,8 @@ if (($upgrade['status'] ?? '') === 'ready') {
         }
     }
 }
-$show_upgrade = $pending_kernel !== '' && ($nvidia_inst || $intel_inst) && ($_GET['kernel_upgrade'] ?? '') === '1';
-$updates = vgpu_driver_updates_or_error(['nvidia'=>$nvidia_inst, 'i915'=>$intel_inst]);
+$show_upgrade = $pending_kernel !== '' && ($nvidia_inst || $intel_opted_in) && ($_GET['kernel_upgrade'] ?? '') === '1';
+$updates = vgpu_driver_updates_or_error(['nvidia'=>$nvidia_inst, $intel_driver=>$intel_inst]);
 $license_server = vgpu_setting('nvidia_license_server');
 $docker = json_decode((string)@file_get_contents('/etc/docker/daemon.json'), true) ?: [];
 $docker_gpu = isset($docker['runtimes']['nvidia']);
@@ -103,13 +112,16 @@ $action_url = "/plugins/$vgpu_plugin/include/actions.php";
 $labels = [];
 $update_warning = 'Update this driver? Related GPU VMs and containers will be stopped. VM shutdown timeout aborts the update; Docker may kill containers after 30 seconds. Restart workloads manually afterwards.';
 $labels[$update_warning] = vgpu_t($update_warning);
+foreach (['Preparing Intel driver switch', 'Cancelling Intel driver switch',
+    'Use {driver} after reboot? i915 is recommended; xe is experimental. This only stages a verified package and does not stop running GPU workloads. Check guest compatibility before rebooting.',
+    'Uninstall Intel SR-IOV? Stop VMs using its VFs first.'] as $label) $labels[$label] = vgpu_t($label);
 foreach (['Profile','Type','Framebuffer','Displays','Max resolution','FRL','Free','No profiles are available on this GPU.','Select a profile first.','Remove this vGPU? Detach it from VMs first.','Stop GPU workloads before restarting NVIDIA services. Continue?','Uninstall NVIDIA? Stop GPU VMs and containers first.','Uninstall Intel i915 SR-IOV? Stop VMs using its VFs first.','Detach this vGPU from {vm}? Cold-start the VM to release it.','Copied.','Copy failed. Select and copy the XML manually.','The request failed. Refresh the page and check the result before retrying.','Enter a full Unraid kernel release, for example 6.18.47-Unraid.','Installing NVIDIA driver','Updating NVIDIA driver','Uninstalling NVIDIA driver','Restarting NVIDIA services','Installing Intel driver','Updating Intel driver','Uninstalling Intel driver','Preparing drivers for the next kernel', 'Checking for driver updates…', 'Could not check driver updates. Try again.', 'Driver update check timed out. Try again.', 'Another driver update check is running. Try again shortly.', 'Update check failed. Try again.', 'The page token expired. Refresh the page and try again.'] as $label) $labels[$label] = vgpu_t($label);
 ?>
 <link rel="stylesheet" href="<?= vgpu_h(vgpu_asset('style.css')) ?>">
 <div class="vgpu-manager" lang="<?= $vgpu_language === 'zh_CN' ? 'zh-CN' : 'en' ?>">
 <div id="vgpu-message" class="vgpu-banner" role="status" aria-live="polite" hidden></div>
 <div class="vgpu-tabs" role="tablist" aria-label="<?= vgpu_e('GPU settings') ?>">
-  <?php foreach (['drivers'=>'Drivers','nvidia'=>'NVIDIA GPU','i915'=>'Intel i915 SR-IOV'] as $tab=>$label): ?>
+  <?php foreach (['drivers'=>'Drivers','nvidia'=>'NVIDIA GPU','i915'=>'Intel SR-IOV'] as $tab=>$label): ?>
   <button type="button" role="tab" id="vgpu-tab-<?= $tab ?>" aria-controls="tab-<?= $tab ?>" aria-selected="<?= $tab === 'drivers' ? 'true' : 'false' ?>" data-tab="tab-<?= $tab ?>" class="vgpu-tab <?= $tab === 'drivers' ? 'active' : '' ?>"><?= vgpu_e($label) ?></button>
   <?php endforeach; ?>
 </div>
@@ -124,7 +136,7 @@ foreach (['Profile','Type','Framebuffer','Displays','Max resolution','FRL','Free
     </div>
     <div class="vgpu-scroll"><table class="vgpu-table">
       <tr><th><?= vgpu_e('Driver') ?></th><th><?= vgpu_e('Preparation status') ?></th><th><?= vgpu_e('Verified package') ?></th></tr>
-      <?php foreach (['nvidia'=>['NVIDIA vGPU',$nvidia_inst], 'intel'=>['Intel i915 SR-IOV',$intel_inst]] as $vendor=>$driver):
+      <?php foreach (['nvidia'=>['NVIDIA vGPU',$nvidia_inst], 'intel'=>["Intel $intel_next_driver SR-IOV",$intel_opted_in]] as $vendor=>$driver):
         if (!$driver[1]) continue;
         $state = $upgrade[$vendor] ?? 'pending';
         $status_labels = ['ready'=>'Ready','pending'=>'Not prepared','missing'=>'Missing package or download failed']; ?>
@@ -151,7 +163,7 @@ foreach (['Profile','Type','Framebuffer','Displays','Max resolution','FRL','Free
     <table class="vgpu-status">
       <tr><td>Unraid:</td><td><?= vgpu_h($unraid_v) ?></td><td><?= vgpu_e('Running kernel') ?>:</td><td><?= vgpu_h($kernel) ?></td></tr>
       <tr><td>NVIDIA vGPU:</td><td class="<?= $nvidia_inst ? 'vgpu-ok' : 'vgpu-bad' ?>"><?= vgpu_e($nvidia_inst ? 'Installed' : 'Not installed') ?></td><td><?= vgpu_e('Loaded driver') ?>:</td><td class="<?= $loaded_v ? 'vgpu-ok' : 'vgpu-bad' ?>"><?= $loaded_v ? vgpu_h($loaded_v) : vgpu_e('Not loaded') ?></td></tr>
-      <tr><td>Intel i915:</td><td class="<?= $intel_inst ? 'vgpu-ok' : 'vgpu-bad' ?>"><?= vgpu_e($intel_inst ? 'Installed' : 'Not installed') ?></td><td><?= vgpu_e('Loaded module') ?>:</td><td class="<?= $i915_sriov ? 'vgpu-ok' : 'vgpu-warn' ?>"><?= $i915_loaded ? vgpu_h($i915_installed_v ?: 'i915') : vgpu_e('Not loaded') ?></td></tr>
+      <tr><td>Intel <?= vgpu_h($intel_driver) ?>:</td><td class="<?= $intel_inst ? 'vgpu-ok' : 'vgpu-bad' ?>"><?= vgpu_e($intel_inst ? 'Installed' : 'Not installed') ?></td><td><?= vgpu_e('Loaded module') ?>:</td><td class="<?= $intel_sriov ? 'vgpu-ok' : 'vgpu-warn' ?>"><?= $intel_loaded ? vgpu_h($intel_loaded_v) : vgpu_e('Not loaded') ?></td></tr>
       <tr><td><?= vgpu_e('Intel GPU (PF)') ?>:</td><td><?= $intel_pf ? vgpu_h($intel_pf) : vgpu_e('Not detected') ?></td><td>VFs:</td><td><?= $intel_total !== '' ? vgpu_h(($intel_vfs ?: '0')." / $intel_total") : vgpu_e('Not available') ?></td></tr>
       <?php vgpu_update_rows($updates); ?>
     </table>
@@ -185,15 +197,35 @@ foreach (['Profile','Type','Framebuffer','Displays','Max resolution','FRL','Free
   </div>
 
   <div class="vgpu-panel">
-    <h3><i class="fa fa-microchip" aria-hidden="true"></i> <?= vgpu_e('Intel i915 SR-IOV driver') ?></h3>
+    <h3><i class="fa fa-microchip" aria-hidden="true"></i> <?= vgpu_e('Intel SR-IOV driver') ?></h3>
+    <div id="intel-driver-selection">
+      <label for="intel-driver-pick"><?= vgpu_e('Intel driver') ?>:</label>
+      <select id="intel-driver-pick" aria-describedby="intel-driver-help">
+        <option value="i915" <?= $intel_next_driver === 'i915' ? 'selected' : '' ?>><?= vgpu_e('i915 (default, recommended)') ?></option>
+        <option value="xe" <?= $intel_next_driver === 'xe' ? 'selected' : '' ?>><?= vgpu_e('xe (experimental)') ?></option>
+      </select>
+      <button type="button" data-command="<?= $intel_opted_in ? 'switch_intel' : 'install_intel' ?>"><?= vgpu_e($intel_opted_in ? 'Use selected driver after reboot' : 'Install selected Intel driver') ?></button>
+      <div id="intel-driver-help">
+        <p><?= vgpu_e('i915 is the default and recommended SR-IOV route for this plugin. Keep i915 unless you have a specific hardware or testing need; newer xe does not automatically mean faster or more stable.') ?></p>
+        <p class="vgpu-warn"><strong><?= vgpu_e('xe is an experimental driver.') ?></strong> <?= vgpu_e('Both packages use the experimental strongtz community SR-IOV port, not guaranteed production support. Its xe module currently excludes MTL/LNL; mainline xe support is different. Verify your GPU, host kernel and guest driver before testing.') ?></p>
+        <p class="vgpu-muted"><?= vgpu_e('Switching downloads and verifies a separate package for the next boot. It does not stop VMs/containers, replace live modules or change running VFs. Reboot to activate, then verify VF passthrough before starting GPU workloads. Cancel before reboot, or select i915 and reboot again to roll back; the i915 cache is retained. The two community drivers must not be installed together.') ?></p>
+        <p class="vgpu-warn"><?= vgpu_e('Before testing xe, disable automatic startup of GPU VMs/containers. Activation runs before array startup, but a driver failure does not guarantee that Unraid will cancel workload autostart.') ?></p>
+      </div>
+    </div>
+    <?php if ($intel_pending !== ''): ?>
+    <div class="vgpu-banner warn" id="intel-switch-pending">
+      <?= vgpu_e('Queued driver: {driver}. Activation is pending; check Loaded module for the actual running driver.', ['driver'=>$intel_pending]) ?>
+      <?php if ($intel_can_cancel): ?><button type="button" data-command="cancel_intel_switch"><?= vgpu_e('Cancel queued switch') ?></button><?php endif; ?>
+      <?php if (!$intel_can_cancel): ?><p><?= vgpu_e('Activation has not completed after reboot. Check the boot log and GPU support. To roll back, select i915 and reboot again.') ?></p><?php endif; ?>
+    </div>
+    <?php endif; ?>
     <?php if (!$intel_inst): ?>
-    <div class="vgpu-banner warn"><i class="fa fa-download" aria-hidden="true"></i> <?= vgpu_e('The Intel i915 SR-IOV driver is not installed yet.') ?>
+    <div class="vgpu-banner warn"><i class="fa fa-download" aria-hidden="true"></i> <?= vgpu_e('The Intel SR-IOV driver is not installed yet.') ?>
       <?php if (!$intel_pf): ?><p class="vgpu-muted"><?= vgpu_e('No Intel GPU was detected. An installed package will activate when supported hardware is present.') ?></p><?php endif; ?>
-      <button type="button" data-command="install_intel"><?= vgpu_e('Install Intel i915 SR-IOV driver') ?></button>
     </div>
     <?php else: ?>
     <div class="vgpu-banner msg"><i class="fa fa-check" aria-hidden="true"></i>
-      <?= vgpu_e('Intel i915 SR-IOV driver installed ({version}).', ['version'=>$i915_installed_v ?: vgpu_t('Not installed for this kernel')]) ?>
+      <?= vgpu_e('Configured Intel driver: {driver}. Module on disk: {version}.', ['driver'=>$intel_driver, 'version'=>$intel_installed_v ?: vgpu_t('Not installed for this kernel')]) ?>
       <button type="button" data-command="uninstall_intel"><?= vgpu_e('Uninstall') ?></button>
     </div>
     <?php endif; ?>
@@ -318,7 +350,7 @@ foreach (['Profile','Type','Framebuffer','Displays','Max resolution','FRL','Free
 
 <div id="tab-i915" class="vgpu-tab-content" role="tabpanel" aria-labelledby="vgpu-tab-i915">
 <?php $boot_conflicts = vgpu_intel_boot_conflicts(); if ($boot_conflicts): ?>
-  <div class="vgpu-banner warn" id="intel-boot-conflicts"><?= vgpu_e('Conflicting boot options detected: {options}. Remove the managed i915 options and remove xe from global blacklists in the active boot entry, then reboot. The plugin does not edit boot entries.', ['options'=>implode(' ', $boot_conflicts)]) ?></div>
+  <div class="vgpu-banner warn" id="intel-boot-conflicts"><?= vgpu_e('Conflicting boot options detected: {options}. Remove managed i915/xe options and Intel drivers from global blacklists in the active boot entry, then reboot. The plugin does not edit boot entries.', ['options'=>implode(' ', $boot_conflicts)]) ?></div>
 <?php endif; ?>
 <?php if (!$intel_inst): ?>
   <div class="vgpu-panel"><div class="vgpu-banner warn"><i class="fa fa-info-circle" aria-hidden="true"></i> <?= vgpu_e('Install the Intel driver from the Drivers tab first.') ?></div></div>
@@ -329,9 +361,11 @@ foreach (['Profile','Type','Framebuffer','Displays','Max resolution','FRL','Free
   <div class="vgpu-panel">
     <h3><i class="fa fa-info-circle" aria-hidden="true"></i> <?= vgpu_e('Intel SR-IOV status') ?></h3>
     <table class="vgpu-status">
-      <tr><td><?= vgpu_e('Intel GPU (PF)') ?>:</td><td><?= vgpu_h($intel_pf ?: '—') ?></td><td><?= vgpu_e('Loaded module') ?>:</td><td class="<?= $i915_sriov ? 'vgpu-ok' : 'vgpu-warn' ?>"><?= $i915_loaded ? vgpu_h($i915_installed_v ?: 'i915') : vgpu_e('Not loaded') ?></td></tr>
+      <tr><td><?= vgpu_e('Intel GPU (PF)') ?>:</td><td><?= vgpu_h($intel_pf ?: '—') ?></td><td><?= vgpu_e('Loaded module') ?>:</td><td class="<?= $intel_sriov ? 'vgpu-ok' : 'vgpu-warn' ?>"><?= $intel_loaded ? vgpu_h($intel_loaded_v) : vgpu_e('Not loaded') ?></td></tr>
+      <tr><td><?= vgpu_e('Intel driver') ?>:</td><td><?= vgpu_h($intel_driver) ?></td><td><?= vgpu_e('Next boot driver') ?>:</td><td><?= vgpu_h($intel_next_driver) ?></td></tr>
+      <tr><td><?= vgpu_e('Module on disk') ?>:</td><td colspan="3"><?= vgpu_h($intel_installed_v ?: '—') ?></td></tr>
       <tr><td><?= vgpu_e('Active VFs') ?>:</td><td><?= vgpu_h($intel_vfs ?: '0') ?></td><td><?= vgpu_e('Supported VFs') ?>:</td><td><?= vgpu_h($intel_total ?: '—') ?></td></tr>
-      <?php vgpu_update_rows($updates, ['i915']); ?>
+      <?php vgpu_update_rows($updates, [$intel_driver]); ?>
     </table>
   </div>
   <div class="vgpu-panel">
@@ -352,12 +386,12 @@ foreach (['Profile','Type','Framebuffer','Displays','Max resolution','FRL','Free
           <option value="false" <?= vgpu_setting('intel_xelp_enable_ccs', 'true') === 'false' ? 'selected' : '' ?>><?= vgpu_e('Disabled') ?></option>
           <option value="true" <?= vgpu_setting('intel_xelp_enable_ccs', 'true') !== 'false' ? 'selected' : '' ?>><?= vgpu_e('Enabled') ?></option>
         </select></td></tr>
-        <tr><td><?= vgpu_e('Current CCS0 parameter') ?>:</td><td><?= vgpu_h(trim(@file_get_contents('/sys/module/i915/parameters/xelp_enable_ccs') ?: '—')) ?></td></tr>
+        <tr><td><?= vgpu_e('Current CCS0 parameter') ?>:</td><td><?= vgpu_h($intel_loaded ? (vgpu_read("/sys/module/$intel_pf_driver/parameters/xelp_enable_ccs") ?: '—') : '—') ?></td></tr>
         <tr><td></td><td><button type="submit"><?= vgpu_e('Save CCS setting') ?></button></td></tr>
       </table>
     </form>
-    <p class="vgpu-muted"><?= vgpu_e('CCS0 is enabled by default. The i915 SR-IOV driver defaults to off since 2026.09.16; disable it here if a guest has issues. Requires a supported i915 driver and a reboot or driver reload; saving does not interrupt running VFs.') ?></p>
-    <p class="vgpu-muted"><?= vgpu_e('Remove conflicting i915.xelp_enable_ccs options from the boot entry. The plugin does not modify your boot entry.') ?></p>
+    <p class="vgpu-muted"><?= vgpu_e('CCS0 is enabled by default by this plugin on supported i915/xe modules, though the upstream module defaults may differ. Disable it here if a guest has issues. Reboot or reload to apply; saving preserves a queued driver switch and does not interrupt running VFs.') ?></p>
+    <p class="vgpu-muted"><?= vgpu_e('Remove conflicting i915.xelp_enable_ccs and xe.xelp_enable_ccs options from the boot entry. The plugin does not modify your boot entry.') ?></p>
   </div>
   <div class="vgpu-panel">
     <h3><i class="fa fa-plug" aria-hidden="true"></i> <?= vgpu_e('VF passthrough') ?></h3>
@@ -369,11 +403,11 @@ foreach (['Profile','Type','Framebuffer','Displays','Max resolution','FRL','Free
   </div>
   <div class="vgpu-panel">
     <h3><i class="fa fa-terminal" aria-hidden="true"></i> <?= vgpu_e('Boot parameters') ?></h3>
-    <p><?= vgpu_e('Enable IOMMU in firmware and add only these IOMMU parameters to the active Unraid boot entry. The plugin manages i915.enable_guc, i915.max_vfs and i915.xelp_enable_ccs; do not add them to the boot entry or globally blacklist xe.') ?></p>
+    <p><?= vgpu_e('Enable IOMMU in firmware and add only these IOMMU parameters to the active Unraid boot entry. The plugin manages i915/xe max_vfs, force_probe, CCS and i915 enable_guc. Do not duplicate these options or globally blacklist either driver; remove manual Intel modprobe commands from go when switching.') ?></p>
     <pre class="vgpu-xml" id="intel-boot-parameters">intel_iommu=on iommu=pt</pre>
   </div>
 <?php endif; ?>
 </div>
 </div>
-<script>window.vgpuPage = <?= vgpu_json(['gpuTypes'=>$gpu_types,'labels'=>$labels,'language'=>$vgpu_language,'autoUpdates'=>vgpu_setting('update_check','true') === 'true','showUpgrade'=>$show_upgrade]) ?>;</script>
+<script>window.vgpuPage = <?= vgpu_json(['gpuTypes'=>$gpu_types,'labels'=>$labels,'language'=>$vgpu_language,'intelDriver'=>$intel_driver,'autoUpdates'=>vgpu_setting('update_check','true') === 'true','showUpgrade'=>$show_upgrade]) ?>;</script>
 <script src="<?= vgpu_h(vgpu_asset('ui.js')) ?>"></script>

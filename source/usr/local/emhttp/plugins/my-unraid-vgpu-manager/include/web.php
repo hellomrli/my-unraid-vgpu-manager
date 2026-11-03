@@ -72,12 +72,19 @@ function vgpu_json($value) {
     return json_encode($value, JSON_HEX_TAG | JSON_HEX_AMP | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_UNESCAPED_UNICODE | JSON_INVALID_UTF8_SUBSTITUTE);
 }
 function vgpu_read($file) { return trim((string)@file_get_contents($file)); }
+function vgpu_intel_driver() {
+    return vgpu_setting('intel_driver') === 'xe' ? 'xe' : 'i915';
+}
+function vgpu_intel_pending_driver() {
+    $driver = vgpu_setting('intel_pending_driver');
+    return in_array($driver, ['i915','xe'], true) ? $driver : '';
+}
 function vgpu_intel_boot_conflicts($cmdline = null) {
     $conflicts = [];
     foreach (preg_split('/\s+/', $cmdline ?? vgpu_read('/proc/cmdline')) as $option) {
-        if (preg_match('/^i915\.(?:max_vfs|enable_guc|xelp_enable_ccs)=/', $option) ||
+        if (preg_match('/^(?:i915|xe)\.(?:max_vfs|enable_guc|xelp_enable_ccs|force_probe)=/', $option) ||
             (preg_match('/^(?:module_blacklist|modprobe\.blacklist)=(.*)$/', $option, $match) &&
-             in_array('xe', explode(',', $match[1]), true))) $conflicts[] = $option;
+             array_intersect(['i915','xe','intel_sriov_compat'], explode(',', $match[1])))) $conflicts[] = $option;
     }
     return $conflicts;
 }
@@ -119,6 +126,7 @@ function vgpu_driver_updates($mode = 'status') {
     foreach ($state['drivers'] as &$driver) {
         $labels = ['disabled'=>'Not enabled', 'unchecked'=>'Not checked', 'current'=>'No newer driver available',
             'missing'=>'Not installed for this kernel', 'pinned'=>'A fixed driver version is selected',
+            'switch_pending'=>'Complete or cancel the queued Intel driver switch before updating.',
             'error'=>'Update check failed. Try again.',
             'rate_limited'=>'GitHub API rate limit reached. Wait for the limit to reset before retrying.'];
         $driver['message'] = vgpu_t($labels[$driver['status']] ?? 'Not checked');
@@ -151,14 +159,15 @@ function vgpu_asset($name) {
     return "/plugins/my-unraid-vgpu-manager/include/$name?v=".($hash ? substr($hash, 0, 12) : '0');
 }
 function vgpu_package_label($package) {
-    if (preg_match('/^(?:nvidia|i915-sriov)-([0-9.]+)-.+-([0-9]+)\.txz$/D', $package, $match)) {
+    if (preg_match('/^(?:nvidia|i915-sriov|xe-sriov)-([0-9.]+)-.+-([0-9]+)\.txz$/D', $package, $match)) {
         return vgpu_t('{version} (build {build})', ['version'=>$match[1], 'build'=>$match[2]]);
     }
     return $package;
 }
-function vgpu_update_rows($updates, $sources = ['nvidia','i915']) {
-    foreach (['nvidia'=>'NVIDIA vGPU', 'i915'=>'Intel i915 SR-IOV'] as $source=>$name) {
+function vgpu_update_rows($updates, $sources = ['nvidia','i915','xe']) {
+    foreach (['nvidia'=>'NVIDIA vGPU', 'i915'=>'Intel i915 SR-IOV', 'xe'=>'Intel xe SR-IOV'] as $source=>$name) {
         if (!in_array($source, $sources, true)) continue;
+        if (!isset($updates['drivers'][$source])) continue;
         $driver = $updates['drivers'][$source];
         if ($driver['status'] === 'disabled') continue;
         $available = $driver['status'] === 'available';

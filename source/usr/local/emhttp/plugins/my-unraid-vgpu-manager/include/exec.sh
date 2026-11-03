@@ -95,21 +95,51 @@ update_driver() {
 }
 
 install_intel() {
-  local pkg
+  local pkg driver="${1:-$(intel_driver)}"
+  valid_intel_driver "$driver" || return 1
+  if [ "$driver" != "$(intel_driver)" ] || [ "$driver" = xe ] || [ -n "$(intel_pending_driver)" ]; then
+    switch_intel "$driver"; return $?
+  fi
   operation_lock || return 1
-  check_conflicting_plugins i915 || return 1
-  "$EMHTTP/include/download.sh" i915 latest || return 1
-  pkg="$(find_package i915 "$KERNEL_V")" || return 1
+  check_conflicting_plugins "$driver" || return 1
+  "$EMHTTP/include/download.sh" "$driver" latest || return 1
+  pkg="$(find_package "$driver" "$KERNEL_V")" || return 1
   "$RC" intel_install "$pkg"
 }
 
+switch_intel() {
+  local driver="${1:-}" active pending pkg next
+  valid_intel_driver "$driver" || { echo 'ERROR: expected i915 or xe' >&2; return 1; }
+  operation_lock || return 1
+  check_conflicting_plugins "$driver" || return 1
+  active="$(intel_driver)"; pending="$(intel_pending_driver)"
+  if [ "$driver" = "$active" ] && [ "$(setting intel_installed)" = true ] && ! intel_switch_due; then
+    if [ -n "$pending" ]; then "$RC" intel_cancel_switch
+    else bilingual 'This Intel driver is already selected.' '已经选择此 Intel 驱动。'; fi
+    return $?
+  fi
+  "$EMHTTP/include/download.sh" "$driver" latest || return 1
+  pkg="$(find_package "$driver" "$KERNEL_V")" || return 1
+  # Keep a verified rollback package; a switch must not strand an enabled PF.
+  if [ "$(setting intel_installed)" = true ]; then
+    "$EMHTTP/include/download.sh" "$active" latest || return 1
+  fi
+  next="$(php "$EMHTTP/include/kernel.php" 2>/dev/null)"
+  if valid_kernel "$next" && [ "$next" != "$KERNEL_V" ]; then
+    "$EMHTTP/include/download.sh" "$driver" latest --kernel "$next" || return 1
+  fi
+  "$RC" intel_switch "$driver" "$pkg"
+}
+
 update_intel() {
-  local pkg
+  local pkg driver
+  driver="$(intel_driver)" || return 1
   [ "$(setting intel_installed)" = true ] || { echo 'ERROR: Intel is not enabled'; return 1; }
   operation_lock || return 1
-  check_conflicting_plugins i915 || return 1
-  "$EMHTTP/include/download.sh" i915 latest --refresh || return 1
-  pkg="$(find_package i915 "$KERNEL_V")" || return 1
+  [ -z "$(intel_pending_driver)" ] || { echo 'ERROR: cancel or complete the queued driver switch before updating' >&2; return 1; }
+  check_conflicting_plugins "$driver" || return 1
+  "$EMHTTP/include/download.sh" "$driver" latest --refresh || return 1
+  pkg="$(find_package "$driver" "$KERNEL_V")" || return 1
   "$RC" intel_update "$pkg"
 }
 
@@ -118,10 +148,11 @@ case "${1:-}" in
   change_update_check) change_update_check "${2:-}"; exit $? ;;
   get_boot_kernel) exec php "$EMHTTP/include/kernel.php" ;;
   prepare_kernel) exec "$EMHTTP/include/upgrade-check.sh" prepare "${2:-}" ;;
-  install_nvidia|update_driver|install_intel|update_intel)
+  install_nvidia|update_driver|install_intel|update_intel|switch_intel)
     action="$1"; shift; "$action" "$@"; result=$? ;;
   uninstall_nvidia) "$RC" nvidia_uninstall; result=$? ;;
   uninstall_intel) "$RC" intel_uninstall; result=$? ;;
+  cancel_intel_switch) "$RC" intel_cancel_switch; result=$? ;;
   restart_services) "$RC" restart; result=$? ;;
   apply_devices) "$RC" apply; result=$? ;;
   *) echo 'ERROR: unknown operation' >&2; exit 1 ;;

@@ -139,7 +139,7 @@
         throw new Error('Update check failed');
       }
       if (!result.updates?.drivers) throw new Error('Invalid update status');
-      const drivers = ['nvidia', 'i915'].map(source => {
+      const drivers = ['nvidia', page.intelDriver || 'i915'].map(source => {
         const driver = result.updates.drivers[source];
         if (!driver || typeof driver.message !== 'string') throw new Error('Invalid driver status');
         return [source, driver];
@@ -230,8 +230,10 @@
     uninstall_nvidia: ['Uninstalling NVIDIA driver', 'Uninstall NVIDIA? Stop GPU VMs and containers first.'],
     restart_services: ['Restarting NVIDIA services', 'Stop GPU workloads before restarting NVIDIA services. Continue?'],
     install_intel: ['Installing Intel driver'],
+    switch_intel: ['Preparing Intel driver switch'],
+    cancel_intel_switch: ['Cancelling Intel driver switch'],
     update_intel: ['Updating Intel driver', 'Update this driver? Related GPU VMs and containers will be stopped. VM shutdown timeout aborts the update; Docker may kill containers after 30 seconds. Restart workloads manually afterwards.'],
-    uninstall_intel: ['Uninstalling Intel driver', 'Uninstall Intel i915 SR-IOV? Stop VMs using its VFs first.'],
+    uninstall_intel: ['Uninstalling Intel driver', 'Uninstall Intel SR-IOV? Stop VMs using its VFs first.'],
     prepare_kernel: ['Preparing drivers for the next kernel']
   };
   root.querySelectorAll('[data-command]').forEach(button => button.addEventListener('click', () => {
@@ -241,6 +243,12 @@
     let url = '/plugins/my-unraid-vgpu-manager/include/exec.sh&arg1=' + command;
     if (command === 'install_nvidia') url += '&arg2=' + encodeURIComponent(document.getElementById('nvidia-series-pick').value);
     if (command === 'update_driver') url += '&arg2=' + encodeURIComponent(button.dataset.series) + '&arg3=latest';
+    if (command === 'install_intel' || command === 'switch_intel') {
+      const driver = document.getElementById('intel-driver-pick').value;
+      if (!['i915', 'xe'].includes(driver)) return;
+      if ((driver === 'xe' || command === 'switch_intel') && !confirm(text('Use {driver} after reboot? i915 is recommended; xe is experimental. This only stages a verified package and does not stop running GPU workloads. Check guest compatibility before rebooting.', {driver}))) return;
+      url += '&arg2=' + encodeURIComponent(driver);
+    }
     if (command === 'prepare_kernel') {
       const kernel = document.getElementById('target-kernel').value.trim();
       if (kernel && !/^[0-9]+(?:\.[0-9]+){1,2}(?:-[A-Za-z0-9._+]+)*-Unraid$/.test(kernel)) {

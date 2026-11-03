@@ -6,9 +6,11 @@ MODE="${1:-auto}"
 case "$MODE" in auto|check|refresh|status) ;; *) exit 1 ;; esac
 STATE="/var/tmp/${PLUGIN}-updates.json"
 NV="$(setting nvidia_installed)"; INTEL="$(setting intel_installed)"
-CURRENT_NV="$(installed_package nvidia)"; CURRENT_INTEL="$(installed_package i915)"
+INTEL_DRIVER="$(intel_driver)" || exit 1
+PENDING_INTEL="$(intel_pending_driver)" || exit 1
+CURRENT_NV="$(installed_package nvidia)"; CURRENT_INTEL="$(installed_package "$INTEL_DRIVER")"
 SERIES="$(nvidia_active_series)"; WANT="$(setting driver_version)"; WANT="${WANT:-latest}"
-KEY="$(printf '%s|%s|%s|%s|%s|%s|%s' "$KERNEL_V" "$NV" "$INTEL" "$CURRENT_NV" "$CURRENT_INTEL" "$SERIES" "$WANT" | sha256sum | cut -d' ' -f1)"
+KEY="$(printf '%s|' "$KERNEL_V" "$NV" "$INTEL" "$CURRENT_NV" "$CURRENT_INTEL" "$SERIES" "$WANT" "$INTEL_DRIVER" "$PENDING_INTEL" | sha256sum | cut -d' ' -f1)"
 
 initial_driver() {
   local enabled="$1" current="$2" series="$3" want="$4" status=unchecked
@@ -18,10 +20,12 @@ initial_driver() {
   jq -cn --arg status "$status" --arg current "$current" --arg series "$series" \
     '{status:$status,current:$current,latest:"",series:$series}'
 }
-BASE="$(jq -cn --arg key "$KEY" --arg kernel "$KERNEL_V" \
+INTEL_STATE="$(initial_driver "$INTEL" "$CURRENT_INTEL" '' latest)"
+if [ -n "$PENDING_INTEL" ]; then INTEL_STATE="$(jq -c '.status="switch_pending"' <<< "$INTEL_STATE")"; fi
+BASE="$(jq -cn --arg key "$KEY" --arg kernel "$KERNEL_V" --arg source "$INTEL_DRIVER" \
   --argjson nvidia "$(initial_driver "$NV" "$CURRENT_NV" "$SERIES" "$WANT")" \
-  --argjson i915 "$(initial_driver "$INTEL" "$CURRENT_INTEL" '' latest)" \
-  '{key:$key,kernel:$kernel,checked_at:0,drivers:{nvidia:$nvidia,i915:$i915}}')" || exit 1
+  --argjson intel "$INTEL_STATE" \
+  '{key:$key,kernel:$kernel,checked_at:0,drivers:{nvidia:$nvidia,($source):$intel}}')" || exit 1
 cached_state() {
   jq -ce --arg key "$KEY" 'select(.key == $key and (.drivers | type) == "object")' "$STATE" 2>/dev/null || printf '%s\n' "$BASE"
 }
@@ -88,9 +92,9 @@ check_driver() {
     '{status:$status,current:$current,latest:$latest,series:$series}'
 }
 NEXT="$(jq -cn --argjson base "$BASE" \
-  --argjson nvidia "$(check_driver nvidia "$SERIES")" --argjson i915 "$(check_driver i915 '')" \
+  --arg source "$INTEL_DRIVER" --argjson nvidia "$(check_driver nvidia "$SERIES")" --argjson intel "$(check_driver "$INTEL_DRIVER" '')" \
   --argjson checked_at "$(date +%s)" \
-  '$base | .checked_at=$checked_at | .drivers={nvidia:$nvidia,i915:$i915}')" || exit 1
+  '$base | .checked_at=$checked_at | .drivers={nvidia:$nvidia,($source):$intel}')" || exit 1
 TMP="$(mktemp "${STATE}.XXXXXX")" || exit 1
 printf '%s\n' "$NEXT" > "$TMP" && chmod 0644 "$TMP" && mv -f "$TMP" "$STATE" || { rm -f "$TMP"; exit 1; }
 if [ "$MODE" != auto ]; then printf '%s\n' "$NEXT"

@@ -84,21 +84,28 @@ if command == 'upgradepkg':
     package = args[-1].split('%')[-1]
     name = Path(package).name.removesuffix('.txz')
     prefix = ('nvidia-' if name.startswith('nvidia-') else
-              'my-unraid-vgpu-manager-' if name.startswith('my-unraid-vgpu-manager-') else 'i915-sriov-')
+              'my-unraid-vgpu-manager-' if name.startswith('my-unraid-vgpu-manager-') else
+              'xe-sriov-' if name.startswith('xe-sriov-') else 'i915-sriov-')
+    if '%' in args[-1]:
+        previous = args[-1].split('%',1)[0]
+        for db in ('/var/log/packages','/var/lib/pkgtools/packages'):
+            (Path(db)/previous).unlink(missing_ok=True)
     for old in Path('/var/log/packages').glob(prefix + '*'):
         old.unlink()
     (Path('/var/log/packages') / name).write_text('installed\n')
     if prefix == 'nvidia-': state['nvidia_disk_version'] = name.split('-')[1]
     elif prefix == 'i915-sriov-': state['intel_disk_version'] = name.removeprefix(prefix).split('-')[0]
+    elif prefix == 'xe-sriov-': state['xe_disk_version'] = name.removeprefix(prefix).split('-')[0]
     finish()
 if command == 'removepkg':
     (Path('/var/log/packages') / args[-1]).unlink(missing_ok=True)
     finish()
 if command == 'modinfo':
     driver = args[-1]
-    version = state.get('nvidia_disk_version' if driver == 'nvidia' else 'intel_disk_version', '')
+    version = state.get('nvidia_disk_version' if driver == 'nvidia' else 'xe_disk_version' if driver == 'xe' else 'intel_disk_version', '')
     if '-p' in args:
-        finish(output='max_vfs: Maximum VFs' + ('\nxelp_enable_ccs: Enable CCS' if state.get('ccs_supported') else ''))
+        supported = state.get('ccs_supported_'+driver,state.get('ccs_supported'))
+        finish(output='max_vfs: Maximum VFs' + ('\nxelp_enable_ccs: Enable CCS' if supported else ''))
     finish(0 if version else 1, version)
 if command in ('modprobe', 'rmmod'):
     removing = '-r' in args or command == 'rmmod'
@@ -106,15 +113,26 @@ if command in ('modprobe', 'rmmod'):
     for name in names:
         target = module(name)
         if removing:
-            if state.get('module_busy') and name in ('nvidia', 'i915'):
+            if state.get('module_busy') and name in ('nvidia', 'i915', 'xe'):
                 finish(1, 'simulated module is in use')
             if target.exists(): shutil.rmtree(target)
+            if name in ('i915','xe'):
+                for dev in Path('/sys/bus/pci/devices').iterdir():
+                    link = dev/'driver'
+                    if link.is_symlink() and link.resolve().name == name: link.unlink()
         else:
+            if name in state.get('fail_modprobe', []): finish(1, 'simulated module load failure')
             target.mkdir(parents=True, exist_ok=True)
             if name == 'nvidia': (target / 'version').write_text(state.get('nvidia_disk_version', '535.309.01'))
-            if name == 'i915':
+            if name in ('i915','xe'):
                 (target / 'parameters').mkdir(exist_ok=True)
                 (target / 'parameters/max_vfs').write_text('7')
+                (target / 'version').write_text(state.get('xe_disk_version' if name == 'xe' else 'intel_disk_version','mock-sriov'))
+                for dev in sorted(Path('/sys/bus/pci/devices').iterdir()):
+                    if not (dev/'sriov_totalvfs').exists() or (dev/'driver').is_symlink(): continue
+                    Path('/sys/bus/pci/drivers',name).mkdir(exist_ok=True)
+                    (dev/'driver').symlink_to('../../drivers/'+name)
+                    break
     finish()
 if command == 'lsmod':
     finish(output='\n'.join(p.name + ' 123 0' for p in Path('/sys/module').iterdir()))
